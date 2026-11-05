@@ -24,8 +24,8 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
 Private GitHub repositories and opening pull requests work with a GitHub token (see below).
-Telegram notifications tell you when a job finishes. Not yet built: more agents (Codex,
-Gemini), multiple users. See [the roadmap](#roadmap).
+Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
+Gemini CLI. Not yet built: multiple users.
 
 ## Quickstart (about 5 minutes)
 
@@ -78,6 +78,11 @@ token on your own computer with `claude setup-token` and set `CLAUDE_CODE_OAUTH_
 Then choose **Agent task** in the app, pick the agent, describe the task, and start it. You get
 the agent's messages live, its summary, and the full diff. Nothing is pushed anywhere unless
 you tap **Create pull request** (see below).
+
+The same works for **Codex** (`thinair auth codex`: it shows a link and a one-time code, or set
+`CODEX_API_KEY`) and **Gemini CLI** (`thinair auth gemini`, choose "Sign in with Google", or set
+`GEMINI_API_KEY`). Google notes that for unpaid-tier and Google One accounts Gemini CLI was
+replaced by Antigravity CLI; an API key still works.
 
 Adding another agent takes one YAML file, no code changes. See [docs/agents.md](docs/agents.md).
 
@@ -248,7 +253,7 @@ runs. Memory limits are set on every service. Measured numbers are in
 ## Roadmap
 
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
-  notifications (done), Codex CLI and Gemini CLI configs.
+  notifications, Codex CLI and Gemini CLI configs (all done).
 - **Phase 3:** outbound allowlist for agent runs, multiple users, Postgres, remote runners,
   Agent Client Protocol (ACP) adapter.
 

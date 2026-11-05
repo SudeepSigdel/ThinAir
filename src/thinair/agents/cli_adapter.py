@@ -22,13 +22,14 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from thinair.agents.config import AgentConfig
-from thinair.agents.stream import AgentEvent, parse_line
+from thinair.agents.stream import AgentEvent, StreamParser
 from thinair.project.prepare import GIT_IMAGE, PreparedProject, ensure_image
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
 
 LogFn = Callable[[str], None]
 NODE_IMAGE_FOR_RUNTIME = "node:22-slim"
+CA_CERTS_IMAGE = "python:3.12-slim"  # Debian with ca-certificates
 MAX_DIFF_BYTES = 1024**2
 # The exact patch kept for opening a pull request. Bigger changes can still be reviewed in the
 # (capped) diff, but not turned into a PR from the phone.
@@ -74,6 +75,13 @@ class AgentAdapter(Protocol):
 # ---- agent image -----------------------------------------------------------------------------
 def agent_dockerfile(cfg: AgentConfig, base_image: str, stack: str) -> str:
     lines = [f"FROM {base_image}", "USER root"]
+    if cfg.needs_ca_certs:
+        # From the same Debian release as our images; no apt needed.
+        lines += [
+            f"COPY --from={CA_CERTS_IMAGE} /etc/ssl/certs/ca-certificates.crt "
+            "/etc/ssl/certs/ca-certificates.crt",
+            "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        ]
     if cfg.needs_node and stack != "node":
         # Same Debian/glibc family as our Python image, so the official binaries run as-is.
         lines += [
@@ -216,6 +224,7 @@ class CLIAdapter:
         patterns = [p.lower() for p in self.cfg.auth_error_patterns]
         auth_hit = False
         result_event: AgentEvent | None = None
+        parser = StreamParser(self.cfg.output)
 
         def on_line(line: str) -> None:
             nonlocal auth_hit
@@ -223,11 +232,16 @@ class CLIAdapter:
             low = line.lower()
             if any(p in low for p in patterns):
                 auth_hit = True
-            for ev in parse_line(line, self.cfg.output):
+            for ev in parser.feed(line):
                 queue.put_nowait(ev)
 
+        def on_done(_t: asyncio.Task) -> None:
+            for ev in parser.finish():  # e.g. buffered text when the output ends abruptly
+                queue.put_nowait(ev)
+            queue.put_nowait(None)
+
         runner = asyncio.create_task(self._mgr.run(self._spec(self.cfg.argv(task)), on_line))
-        runner.add_done_callback(lambda _t: queue.put_nowait(None))
+        runner.add_done_callback(on_done)
         try:
             while (ev := await queue.get()) is not None:
                 if ev.kind == "result":

@@ -162,6 +162,16 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   `test_claude_image_docker.py` (real CLI, uses id `claude-test` so it never touches a real login volume).
 - `thinair auth <id>` (interactive `docker run -it`, or `--print-command` for Compose hosts), `--check`; `thinair agents`.
 - Never log into a real account from tests or automation: logging in is the owner's job.
+- Codex 0.166.0 + Gemini CLI 0.67.0 (phase 2 step 16): flags verified from each pinned CLI's `--help` run in a
+  container, the docs (Gemini's are bundled in its npm package), and the event schemas at the matching source tags
+  (see docs/agents.md). `StreamParser(fmt).feed()/finish()` handles `stream-json` (Claude, stateless `parse_line`),
+  `codex-json` and `gemini-stream-json` (joins `delta` chunks; summary = last assistant text).
+- Gotcha: Codex's native binary needs a system CA bundle; node:22-slim has none (`UnknownIssuer`). Agent option
+  `needs_ca_certs` copies `/etc/ssl/certs/ca-certificates.crt` from python:3.12-slim (no apt) + sets SSL_CERT_FILE.
+- Gemini: no login-status command (check_command null); logged-out runs exit 41 "Please set an Auth method" ->
+  auth_error_patterns. Needs `--skip-trust` headless. Google replaced Gemini CLI by Antigravity CLI for unpaid/Google
+  One users (2026-06-18); API key or paid plan still works.
+- `test_more_agents_docker.py`: real CLIs, `-test` ids, no account, codex exec run with network off.
 
 ## Pull requests (`src/thinair/jobs/pr.py`, phase 2 step 14)
 - Agent job end: `CLIAdapter._collect_patch` writes `git diff --cached --binary --full-index` to `.git/thinair.patch`
@@ -199,5 +209,6 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Status
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
-Phase 2: steps 13 (private repos), 14 (pull requests), 15 (Telegram) done: 286 tests (244 fast + 42 Docker),
-browser smoke 28/28. Next: 16 Codex/Gemini configs (verify flags first).
+Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
+Phase 3 plan: 17 egress allowlist for agent runs (per-job proxy container on an internal network), then
+Postgres support; multiple users / remote runners / ACP need a design discussion with the owner first.

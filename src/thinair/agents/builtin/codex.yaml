@@ -1,0 +1,48 @@
+# OpenAI Codex CLI. Flags verified on 2026-11-06 against `codex exec --help` / `codex login --help`
+# of the pinned version, the official docs, and the JSON event schema in the source at tag
+# rust-v0.166.0 (codex-rs/exec/src/exec_events.rs). See docs/agents.md.
+id: codex
+name: Codex
+version: "0.166.0"
+install: npm install -g @openai/codex@0.166.0
+needs_node: true          # the npm launcher (bin/codex.js) runs on Node.js
+needs_ca_certs: true      # the native binary uses the system CA bundle (node:22-slim has none)
+output: codex-json
+command:
+  - codex
+  - exec
+  - --json
+  # Codex's own sandbox is replaced by Thinair's container ("intended solely for running in
+  # environments that are externally sandboxed", per `codex exec --help`).
+  - --dangerously-bypass-approvals-and-sandbox
+  - --skip-git-repo-check
+  - --ephemeral           # no session files in the login volume
+  - --color
+  - never
+  - --
+  - "{task}"
+env:
+  CODEX_HOME: /thinair-auth                 # config, login (auth.json) and state live here
+auth:
+  config_dir: /thinair-auth
+  # Device-code login prints a URL and a code: open the URL on any device and enter the code.
+  login_command: [codex, login, --device-auth]
+  check_command: [codex, login, status]     # exits 0 when logged in, 1 when not (verified)
+  # Alternative: an API key for non-interactive runs (documented as CODEX_API_KEY for `codex exec`).
+  env_passthrough: [CODEX_API_KEY]
+  login_help: >-
+    Codex prints a link and a one-time code. Open the link on any device, sign in with your own
+    account and enter the code. The command ends by itself when the login is saved.
+  hint: >-
+    Codex is not logged in for this Thinair server. Run `thinair auth codex` on the server (or set
+    CODEX_API_KEY).
+auth_error_patterns:
+  - not logged in
+  - "401 unauthorized"
+  - invalid api key
+  - please log in
+limits:
+  cpus: 2
+  memory: 2g
+  pids: 1024
+  timeout_s: 1800

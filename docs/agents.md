@@ -57,8 +57,59 @@ Source: the official docs at code.claude.com (`headless`, `cli-reference`, `iam`
 Not documented, so handled defensively: the exact shape of assistant/tool messages in the stream.
 The parser shows text and tool calls it recognises and logs everything else verbatim.
 
-Codex CLI and Gemini CLI configs are not shipped yet. Their flags will be verified the same way
-before they are added.
+## Codex: what was verified (2026-11-06)
+
+Sources: `codex exec --help`, `codex login --help` and `codex login status` run from the pinned
+npm package in a container; the official docs (developers.openai.com/codex: non-interactive mode,
+CLI reference, auth, environment variables); and the JSON event schema in the source at tag
+`rust-v0.166.0` (`codex-rs/exec/src/exec_events.rs`).
+
+| Need | Flag / setting | Notes |
+|---|---|---|
+| Non-interactive run | `codex exec [OPTIONS] -- "<task>"` | The prompt is positional; stdin is read only if no prompt is given |
+| Machine-readable stream | `--json` | JSONL: `thread.started`, `turn.started`, `turn.completed` (`usage`), `turn.failed` (`error.message`), `item.started/updated/completed`, `error`. Item types: `agent_message` (`text`), `reasoning`, `command_execution` (`command`, `exit_code`, `status`), `file_change` (`changes[].path`), `mcp_tool_call`, `web_search`, `todo_list`, `error` |
+| Act without approval prompts | `--dangerously-bypass-approvals-and-sandbox` | Help text: "Intended solely for running in environments that are externally sandboxed". Thinair's container is that sandbox |
+| Not a git repo? | `--skip-git-repo-check` | Workspaces always have git here; kept for uploaded folders |
+| No session files | `--ephemeral` | |
+| Login location | `CODEX_HOME=/thinair-auth` | Must exist (it is the mounted login volume); holds `auth.json` and config |
+| Login | `codex login --device-auth` | Prints a URL and a one-time code; works without a browser on the server |
+| Login check | `codex login status` | Exit 0 = logged in, 1 = not (checked in a container) |
+| Token login | `CODEX_API_KEY` | Documented for `codex exec` |
+| Install | `npm install -g @openai/codex@0.166.0` | Node launcher + native binary |
+
+Found by running it: the native binary verifies TLS against the system CA bundle, which
+`node:22-slim` does not have (`invalid peer certificate: UnknownIssuer`). The agent config sets
+`needs_ca_certs: true`, so the image gets Debian's bundle copied from `python:3.12-slim` (no apt).
+
+Not set: Codex's analytics switch (`[analytics] enabled = false` in `config.toml`) is described in
+the docs but not as a flag; add it to `/thinair-auth/config.toml` in the login volume if you want it.
+
+## Gemini CLI: what was verified (2026-11-06)
+
+Sources: `gemini --help` from the pinned npm package, the docs bundled inside that package
+(`docs/cli/headless.md`, `trusted-folders.md`, `reference/configuration.md`,
+`get-started/authentication.mdx`), its error messages, and the stream-json types in the source at
+tag `v0.67.0` (`packages/core/src/output/types.ts`).
+
+**Heads-up from Google's docs:** "Unpaid tier and Google One users: Gemini CLI was replaced by
+Antigravity CLI on June 18th, 2026." A Gemini API key or a paid plan still works with Gemini CLI.
+An Antigravity CLI config can be added once its headless flags are verified.
+
+| Need | Flag / setting | Notes |
+|---|---|---|
+| Non-interactive run | `--prompt "<task>"` | A positional prompt starts interactive mode, so it is not used |
+| Machine-readable stream | `--output-format stream-json` | JSONL: `init` (`model`), `message` (`role`, `content`, `delta`), `tool_use` (`tool_name`, `parameters`), `tool_result` (`status`, `error`), `error` (`severity`, `message`), `result` (`status`, `error`, `stats`). Assistant text arrives in `delta` chunks, which Thinair joins |
+| Act without approval prompts | `--approval-mode yolo` | `--yolo` is deprecated. Gemini's own `--sandbox` needs Docker/Podman and stays off |
+| Headless in an untrusted folder | `--skip-trust` | Otherwise `FatalUntrustedWorkspaceError` |
+| Login location | `GEMINI_CLI_HOME=/thinair-auth` | The CLI uses `/thinair-auth/.gemini` |
+| Login | `gemini`, "Sign in with Google", with `NO_BROWSER=true` | The CLI's own error messages recommend `NO_BROWSER=true` for manual authentication (link + code). Not run with a real account |
+| Login check | none | There is no status command. A logged-out run exits 41 with "Please set an Auth method", which Thinair turns into the login hint |
+| Token login | `GEMINI_API_KEY` | The documented headless method |
+| Install | `npm install -g @google/gemini-cli@0.67.0` | Needs Node.js 20+ |
+
+Optional settings that only exist in `settings.json` (put them in
+`/thinair-auth/.gemini/settings.json`): `privacy.usageStatisticsEnabled`,
+`general.enableAutoUpdate`, `model.maxSessionTurns`.
 
 ## Adding an agent
 
@@ -71,7 +122,8 @@ name: My Agent
 version: "1.2.3"            # informational
 install: npm install -g my-agent-cli@1.2.3   # run as root while building the agent image
 needs_node: true            # copy Node.js 22 into Python project images
-output: text                # or stream-json (Claude Code's format)
+needs_ca_certs: false       # true: copy Debian's CA bundle in (native binaries on node:22-slim)
+output: text                # or stream-json (Claude Code), codex-json, gemini-stream-json
 command: [my-agent, run, --yes, "{task}"]    # argv, no shell; "{task}" is exactly one item
 env: {MY_AGENT_HOME: /thinair-auth}
 auth:

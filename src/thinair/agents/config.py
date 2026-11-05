@@ -75,10 +75,12 @@ class AgentConfig(_Strict):
     version: str | None = None  # informational; pin the real version in `install`
     install: str  # shell command run as root while building the agent image
     needs_node: bool = False  # copy a Node.js runtime into non-Node project images
+    # Copy Debian's CA bundle into the image (node:22-slim has none; native binaries need it).
+    needs_ca_certs: bool = False
     command: list[str] = Field(min_length=1)  # argv; "{task}" must appear once, as its own item
     env: dict[str, str] = Field(default_factory=dict)
     auth: AuthConfig
-    output: Literal["stream-json", "text"] = "text"
+    output: Literal["stream-json", "codex-json", "gemini-stream-json", "text"] = "text"
     auth_error_patterns: list[str] = Field(default_factory=list)  # case-insensitive substrings
     limits: Limits = Limits()
     network: bool = True  # agents must reach their model provider

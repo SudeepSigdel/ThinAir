@@ -1,0 +1,50 @@
+# Google Gemini CLI. Flags verified on 2026-11-06 against `gemini --help` of the pinned version,
+# the docs bundled with it, and the stream-json event types in the source at tag v0.67.0
+# (packages/core/src/output/types.ts). See docs/agents.md.
+# Note from Google's docs: for unpaid-tier and Google One users, Gemini CLI was replaced by
+# Antigravity CLI on 2026-06-18. A Gemini API key (GEMINI_API_KEY) or a paid plan still works.
+id: gemini
+name: Gemini CLI
+version: "0.67.0"
+install: npm install -g @google/gemini-cli@0.67.0
+needs_node: true          # requires Node.js 20+
+output: gemini-stream-json
+command:
+  - gemini
+  - --output-format
+  - stream-json
+  # Approve every tool call: the container is the sandbox. (Gemini's own --sandbox needs
+  # Docker/Podman and stays off.)
+  - --approval-mode
+  - yolo
+  # Headless runs exit with FatalUntrustedWorkspaceError in an untrusted folder; trust the
+  # workspace for this session only.
+  - --skip-trust
+  - --prompt
+  - "{task}"
+env:
+  GEMINI_CLI_HOME: /thinair-auth            # settings and cached login go to /thinair-auth/.gemini
+  # Login inside a container has no browser: print a link and ask for the code instead (the
+  # CLI's own error messages recommend this for manual authentication).
+  NO_BROWSER: "true"
+auth:
+  config_dir: /thinair-auth
+  login_command: [gemini]                   # interactive: choose "Sign in with Google", then /quit
+  check_command: null                       # Gemini CLI has no login-status command
+  env_passthrough: [GEMINI_API_KEY]
+  login_help: >-
+    In Gemini CLI choose "Sign in with Google", open the link it shows on any device, sign in with
+    your own account, paste the code back, then type /quit. Or set GEMINI_API_KEY instead.
+  hint: >-
+    Gemini CLI is not logged in for this Thinair server. Run `thinair auth gemini` on the server
+    (or set GEMINI_API_KEY).
+auth_error_patterns:
+  - please set an auth method               # printed (exit 41) when no login is configured
+  - authentication consent could not be obtained
+  - api key not valid
+  - fatalauthenticationerror
+limits:
+  cpus: 2
+  memory: 2g
+  pids: 1024
+  timeout_s: 1800
