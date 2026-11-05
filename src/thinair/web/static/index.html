@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Thinair</title>
+  <meta name="description" content="Run coding agents and resource profiles on your repos from your phone.">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Thinair">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#/">Thinair</a>
+    <button id="logout" class="link" type="button" hidden>Log out</button>
+  </header>
+
+  <main>
+    <p id="loading" class="muted">Loading…</p>
+
+    <!-- Login -->
+    <section id="view-login" hidden>
+      <h1>Log in</h1>
+      <p class="muted">Paste the admin token shown when the server first started (or one from
+        <code>thinair token create</code>).</p>
+      <form id="login-form" autocomplete="off">
+        <label for="token">Token</label>
+        <input id="token" name="token" type="password" required autocomplete="current-password"
+               placeholder="thinair_…">
+        <button type="submit">Log in</button>
+        <p class="error" id="login-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- Home: new job + recent jobs -->
+    <section id="view-home" hidden>
+      <div class="tabs" role="tablist">
+        <button type="button" id="mode-profile" class="tab" role="tab" aria-selected="true">Resource profile</button>
+        <button type="button" id="mode-agent" class="tab" role="tab" aria-selected="false">Agent task</button>
+      </div>
+      <p id="mode-help" class="muted">Finds the smallest CPU and memory your project's tests pass with.</p>
+      <form id="job-form">
+        <label for="repo-url">Public GitHub URL</label>
+        <input id="repo-url" name="repo_url" type="url" required inputmode="url"
+               placeholder="https://github.com/owner/repo" autocapitalize="off" spellcheck="false">
+        <div id="agent-fields" hidden>
+          <label for="agent">Agent</label>
+          <select id="agent" name="agent_id"></select>
+          <label for="task">Task</label>
+          <textarea id="task" name="task" rows="4" maxlength="10000"
+                    placeholder="Fix the failing tests"></textarea>
+        </div>
+        <details>
+          <summary>Branch or tag (optional)</summary>
+          <input id="repo-ref" name="ref" type="text" placeholder="main" autocapitalize="off"
+                 spellcheck="false">
+        </details>
+        <button type="submit" id="submit-job">Start profile</button>
+        <p class="error" id="job-error" role="alert" hidden></p>
+      </form>
+
+      <div class="row">
+        <h2>Recent jobs</h2>
+        <button id="refresh" class="link" type="button">Refresh</button>
+      </div>
+      <ul id="jobs" class="jobs"></ul>
+      <p id="jobs-empty" class="muted" hidden>No jobs yet.</p>
+    </section>
+
+    <!-- One job: status, live log, report -->
+    <section id="view-job" hidden>
+      <a href="#/" class="back">‹ All jobs</a>
+      <div class="job-head">
+        <h1 id="job-title"></h1>
+        <span id="job-status" class="chip"></span>
+      </div>
+      <p id="job-meta" class="muted"></p>
+      <p id="job-error-msg" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button id="cancel" type="button" class="danger" hidden>Cancel</button>
+        <button id="retry" type="button" hidden>Run again</button>
+      </div>
+
+      <blockquote id="job-task" hidden></blockquote>
+
+      <div id="report" hidden></div>
+      <div id="agent-result" hidden></div>
+
+      <div id="agent-box" hidden>
+        <h2>Agent activity</h2>
+        <ul id="agent-msgs" class="msgs"></ul>
+        <p id="agent-empty" class="muted">Waiting for the agent…</p>
+      </div>
+
+      <div id="runs-box">
+        <h2>Test runs</h2>
+        <div class="table-wrap">
+          <table id="runs">
+            <thead><tr><th>CPU</th><th>Memory</th><th>Result</th><th>Peak</th><th>Time</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="runs-empty" class="muted">No test runs yet.</p>
+      </div>
+
+      <details id="log-box" open>
+        <summary>Live log</summary>
+        <pre id="log" aria-live="polite"></pre>
+      </details>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,49 @@
+# Claude Code (https://code.claude.com/docs). Flags verified against the official docs on
+# 2026-11-05; see docs/agents.md for what was checked.
+id: claude
+name: Claude Code
+version: "2.1.311"
+install: npm install -g @anthropic-ai/claude-code@2.1.311
+needs_node: true          # the npm package needs Node.js 22+
+output: stream-json
+command:
+  - claude
+  - -p
+  - "{task}"
+  - --output-format
+  - stream-json
+  - --verbose
+  # Headless runs otherwise start in "manual" mode and deny every action that needs approval.
+  # Safe here only because the container is the sandbox (non-root, no host access); the CLI
+  # refuses this mode as root.
+  - --permission-mode
+  - bypassPermissions
+  - --max-turns
+  - "80"
+env:
+  CLAUDE_CONFIG_DIR: /thinair-auth          # the per-agent login volume is mounted here
+  DISABLE_AUTOUPDATER: "1"
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+auth:
+  config_dir: /thinair-auth
+  login_command: [claude]                   # interactive: type /login, follow the link, then /exit
+  check_command: [claude, auth, status]     # exits 0 when logged in, 1 when not
+  # Optional alternative to logging in: generate a token on your own machine with
+  # `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in Thinair's environment.
+  env_passthrough: [CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY]
+  login_help: >-
+    In Claude Code, type /login, open the link it shows (any device works), sign in with your
+    own account, paste the code back, then type /exit.
+  hint: >-
+    Claude Code is not logged in for this Thinair server. Run `thinair auth claude` on the
+    server (or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+auth_error_patterns:
+  - authentication_failed
+  - not logged in
+  - invalid api key
+  - please run /login
+limits:
+  cpus: 2
+  memory: 2g
+  pids: 1024
+  timeout_s: 1800

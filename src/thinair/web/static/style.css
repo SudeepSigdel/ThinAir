@@ -1,0 +1,147 @@
+/* Thinair: mobile-first, system fonts, automatic dark mode. No external assets. */
+:root {
+  --bg: #f7f8fa;
+  --fg: #111827;
+  --muted: #6b7280;
+  --card: #ffffff;
+  --line: #e5e7eb;
+  --accent: #0d9488;
+  --accent-fg: #ffffff;
+  --danger: #dc2626;
+  --warn: #b45309;
+  --ok: #15803d;
+  --log-bg: #0b1220;
+  --log-fg: #d1d5db;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1220;
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --card: #111a2e;
+    --line: #1f2a44;
+    --accent: #2dd4bf;
+    --accent-fg: #042f2e;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --ok: #4ade80;
+    --log-bg: #050a14;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+main { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; margin: 0.4rem 0; overflow-wrap: anywhere; }
+h2 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+a { color: var(--accent); }
+code { font-size: 0.9em; }
+[hidden] { display: none !important; }
+
+.bar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  background: var(--card); border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; text-decoration: none; color: var(--fg); letter-spacing: 0.02em; }
+
+label { display: block; font-weight: 600; margin: 0.8rem 0 0.3rem; }
+input {
+  width: 100%; font: inherit; padding: 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+}
+details { margin: 0.6rem 0; }
+summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+button {
+  font: inherit; font-weight: 600; min-height: 44px; padding: 10px 18px; margin-top: 0.8rem;
+  border: 0; border-radius: 10px; background: var(--accent); color: var(--accent-fg); cursor: pointer;
+}
+button:disabled { opacity: 0.6; }
+form > button { width: 100%; }
+button.danger { background: var(--danger); color: #fff; }
+button.link { background: none; color: var(--accent); padding: 6px 4px; margin: 0; min-height: 0; }
+
+.muted { color: var(--muted); }
+.error { color: var(--danger); overflow-wrap: anywhere; }
+.warn { color: var(--warn); }
+.note { color: var(--muted); }
+.row { display: flex; justify-content: space-between; align-items: baseline; }
+.back { display: inline-block; text-decoration: none; margin-bottom: 0.4rem; padding: 6px 0; }
+
+.jobs { list-style: none; padding: 0; margin: 0; }
+.jobs li { border-bottom: 1px solid var(--line); }
+.jobs a {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 12px 2px 2px; color: var(--fg); text-decoration: none;
+}
+.jobs strong { overflow-wrap: anywhere; }
+.jobs small { display: block; padding: 0 2px 10px; }
+
+.chip {
+  flex: none; font-size: 0.8rem; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  background: var(--line); color: var(--fg); white-space: nowrap;
+}
+.s-running, .s-queued { background: #1d4ed8; color: #fff; }
+.s-succeeded { background: var(--ok); color: #fff; }
+.s-failed, .s-timeout { background: var(--danger); color: #fff; }
+
+.job-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.actions { display: flex; gap: 10px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 1rem 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.card small { display: block; }
+.card strong { display: block; font-size: 1.25rem; margin: 2px 0; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+.r-passed td:nth-child(3) { color: var(--ok); }
+.r-oom_killed td:nth-child(3), .r-test_failed td:nth-child(3), .r-timeout td:nth-child(3),
+.r-startup_failed td:nth-child(3) { color: var(--danger); }
+
+pre {
+  background: var(--log-bg); color: var(--log-fg); border-radius: 10px; padding: 10px 12px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 55vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+#log .sys { color: #5eead4; }
+pre.tail { max-height: 30vh; }
+.downloads { margin-top: 1rem; }
+
+/* ---- agent jobs ---- */
+.tabs { display: flex; gap: 6px; background: var(--line); padding: 4px; border-radius: 12px; }
+.tab { flex: 1; margin: 0; min-height: 40px; background: transparent; color: var(--fg); }
+.tab[aria-selected="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / 15%); }
+select, textarea {
+  width: 100%; font: inherit; padding: 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+}
+textarea { resize: vertical; }
+blockquote {
+  margin: 0.8rem 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: var(--card); border-radius: 0 10px 10px 0; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.msgs { list-style: none; padding: 0; margin: 0; }
+.msgs li { padding: 8px 0; border-bottom: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+.msgs li.tool { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.msgs li.tool::before { content: "› "; color: var(--accent); }
+.msgs li.result { font-weight: 600; }
+.msgs li.auth_error { color: var(--danger); }
+.summary { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 14px; }
+pre.diff { max-height: 70vh; white-space: pre; overflow: auto; }
+pre.diff .add { color: #4ade80; }
+pre.diff .del { color: #f87171; }
+pre.diff .hunk { color: #60a5fa; }
+pre.diff .meta { color: #e5e7eb; font-weight: 700; }

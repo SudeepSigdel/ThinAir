@@ -1,0 +1,69 @@
+# Idle footprint target: ~100 MB total (thinair + socket proxy).
+# Sandboxes exist only while a job runs; nothing polls while idle.
+services:
+  docker-proxy:
+    # Exposes only the Docker API endpoints Thinair needs. The raw socket is never given to
+    # Thinair's own container or to any sandbox. See docs/security.md.
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      VOLUMES: 1
+      BUILD: 1
+      POST: 1
+      EXEC: 1
+      INFO: 1
+      # Everything else (SWARM, SECRETS, SERVICES, PLUGINS, ...) stays denied.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [internal]
+    mem_limit: 32m
+
+  thinair:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${THINAIR_PIP_INDEX_URL:-}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      THINAIR_DATA_DIR: /data
+      THINAIR_DOCKER_HOST: tcp://docker-proxy:2375
+      # Inside the container the server always listens on 0.0.0.0:8080; THINAIR_PORT and
+      # THINAIR_BIND in .env only choose the published host port/address (see `ports`).
+      THINAIR_HOST: 0.0.0.0
+      THINAIR_PORT: "8080"
+    volumes:
+      - thinair-data:/data
+    ports:
+      - "${THINAIR_BIND:-127.0.0.1}:${THINAIR_PORT:-8080}:8080"
+    depends_on: [docker-proxy]
+    networks: [internal, default]
+    mem_limit: 256m
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # Optional automatic HTTPS for phone access: `docker compose --profile https up -d`
+  caddy:
+    profiles: [https]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${THINAIR_DOMAIN:-localhost} --to thinair:8080
+    ports: ["80:80", "443:443"]
+    volumes: [caddy-data:/data]
+    networks: [default]
+    mem_limit: 48m
+
+networks:
+  internal:
+    internal: true
+  default: {}
+
+volumes:
+  thinair-data:
+  caddy-data:

@@ -1,0 +1,7 @@
+# Only pyproject.toml, README.md and src/ are needed to build the server image.
+*
+!pyproject.toml
+!README.md
+!src/
+**/__pycache__
+**/*.pyc

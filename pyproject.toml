@@ -1,0 +1,51 @@
+[project]
+name = "thinair"
+version = "0.1.0"
+description = "Self-hostable platform to run AI coding agents in sandboxes and find the minimum resources a project needs."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.115",          # API framework
+  "uvicorn>=0.30",           # ASGI server (single process, no extra workers)
+  "pydantic-settings>=2.4",  # env-based config
+  "typer>=0.12",             # CLI
+  "sqlmodel>=0.0.48",        # tables + Pydantic schemas in one class
+  "alembic>=1.20.1",         # migrations (SQLite now, Postgres later)
+  "docker>=7.2.0",              # Docker SDK: run sandbox containers
+  "pyyaml>=6.0.3",              # thinair.yaml and agent configs
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6"]
+
+[project.scripts]
+thinair = "thinair.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thinair"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "typer.Option", "typer.Argument"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "E501"]  # test fixtures (JSON lines, scripts) may be long
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--ignore=tests/fixtures"  # fixtures are sample projects, tested inside sandboxes
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["docker: needs a running Docker daemon"]
