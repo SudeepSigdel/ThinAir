@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")
     git_author_email: str = Field(default="thinair@localhost", pattern=r"^[^\s<>@]+@[^\s<>@]+$")
 
+    # Optional Telegram notifications when a job finishes (outbound only; see thinair/notify.py).
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
+    # The address you open Thinair at (e.g. https://thinair.example.com), for links in messages.
+    public_url: str | None = Field(default=None, pattern=r"^(https?://[^\s]+)?$")
+
     @field_validator("github_token_file", mode="before")
     @classmethod
     def _blank_path_is_unset(cls, v: object) -> object:

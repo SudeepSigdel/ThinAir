@@ -153,6 +153,28 @@ def agents() -> None:
         raise typer.Exit(1)
 
 
+@app.command("notify-test")
+def notify_test() -> None:
+    """Send a test notification with the configured Telegram settings."""
+    from thinair.notify import NotifyConfigError, TelegramNotifier, notifier_from_settings
+
+    _utf8_output()
+    try:
+        notifier = notifier_from_settings()
+    except NotifyConfigError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    if not isinstance(notifier, TelegramNotifier):
+        typer.echo("Notifications are off: set THINAIR_TELEGRAM_BOT_TOKEN and _CHAT_ID.", err=True)
+        raise typer.Exit(1)
+    try:
+        notifier.send_text("👋 Thinair test notification: notifications work.")
+    except RuntimeError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo("Sent. Check Telegram.")
+
+
 def login_command(cfg, image: str) -> list[str]:  # noqa: ANN001
     """`docker run` for an interactive login, hardened like every sandbox. Only the agent's own
     login volume is mounted; tokens from Thinair's environment are deliberately NOT passed."""

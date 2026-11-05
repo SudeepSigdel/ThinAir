@@ -24,7 +24,8 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
 Private GitHub repositories and opening pull requests work with a GitHub token (see below).
-Not yet built: more agents (Codex, Gemini), notifications, multiple users. See [the roadmap](#roadmap).
+Telegram notifications tell you when a job finishes. Not yet built: more agents (Codex,
+Gemini), multiple users. See [the roadmap](#roadmap).
 
 ## Quickstart (about 5 minutes)
 
@@ -114,6 +115,27 @@ on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
 `THINAIR_GIT_AUTHOR_EMAIL` (use your GitHub noreply address to have them linked to your
 account). Pushing still never happens inside the agent's sandbox: the agent never sees the
 token. Changes larger than 5 MB can't be turned into a PR from Thinair.
+
+## Notifications (Telegram)
+
+Get a message when a job finishes, with a link back to it:
+
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token.
+2. Send your new bot any message, then open
+   `https://api.telegram.org/bot<token>/getUpdates` and copy `"chat":{"id": ...}`.
+3. Add to `.env`, restart, and check with `thinair notify-test`
+   (`docker compose exec thinair thinair notify-test`):
+
+```sh
+THINAIR_TELEGRAM_BOT_TOKEN=123456:ABC...
+THINAIR_TELEGRAM_CHAT_ID=123456789
+THINAIR_PUBLIC_URL=https://thinair.example.com   # optional: adds a link to each message
+```
+
+Thinair only sends messages; it never listens for any, so nothing runs while idle. A message holds
+the repo name, job type and outcome, the first line of an agent task, a short error or result
+(files changed, the PR link, the minimum CPU/memory), and the link. Logs, diffs and summaries are
+never sent. Cancelled jobs are not announced.
 
 ## Configuring a project: `thinair.yaml`
 
@@ -225,8 +247,8 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 ## Roadmap
 
-- **Phase 2:** private repositories and pull requests from an agent's change (done), Codex CLI
-  and Gemini CLI configs, notifications (Telegram).
+- **Phase 2:** private repositories, pull requests from an agent's change and Telegram
+  notifications (done), Codex CLI and Gemini CLI configs.
 - **Phase 3:** outbound allowlist for agent runs, multiple users, Postgres, remote runners,
   Agent Client Protocol (ACP) adapter.
 

@@ -16,6 +16,7 @@ from thinair.db.models import JobKind
 from thinair.db.session import get_engine, session_scope
 from thinair.jobs.executors import default_executors
 from thinair.jobs.service import Executor, JobService
+from thinair.notify import NotifyConfigError, notifier_from_settings
 
 log = logging.getLogger("thinair")
 
@@ -36,11 +37,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             flush=True,
         )
     settings = get_settings()
+    try:
+        notifier = notifier_from_settings()
+    except NotifyConfigError as e:
+        logging.getLogger("thinair").error("notifications disabled: %s", e)
+        notifier = None
     jobs = JobService(
         app.state.executors or default_executors(),
         workers=settings.max_concurrent_jobs,
         job_timeout_s=settings.job_timeout_s,
         sweep_on_start=settings.sweep_on_start,
+        notifier=notifier,
     )
     await jobs.start()
     app.state.jobs = jobs

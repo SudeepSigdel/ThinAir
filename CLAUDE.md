@@ -179,6 +179,15 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   deletion/install-file edit; patch conflict; push with a fake token -> `push_failed`). Real GitHub push/PR is
   untested (needs the owner's token). Browser smoke now 28 checks.
 
+## Notifications (`src/thinair/notify.py`, phase 2 step 15)
+- `JobService(notifier=...)`: after `_execute` records the final status, `_announce` fires a background task (kept in
+  a set) so a slow or broken notifier never delays/fails a job; skipped while stopping. `notifier(job_id)` reads the DB.
+- `TelegramNotifier`: plain-text `sendMessage` (no parse_mode), outbound only. The bot token is in the URL, so request
+  exceptions are reduced to their type name (their text contains the URL). Formats validated (`BOT_TOKEN_RE`,
+  `CHAT_ID_RE`); malformed settings log "notifications disabled" at startup instead of crashing.
+- Messages: repo, kind, status, task first line, error (<=300) or result (files changed / PR URL / minimum config),
+  link via `THINAIR_PUBLIC_URL`. Never logs, diffs or summaries. Cancelled jobs are silent. CLI: `thinair notify-test`.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.
@@ -190,5 +199,5 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Status
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
-Phase 2: step 13 (private repos) and 14 (pull requests) done: 268 tests (226 fast + 42 Docker), browser smoke 28/28.
-Next: 15 Telegram notifications (outbound only), 16 Codex/Gemini configs (verify flags first).
+Phase 2: steps 13 (private repos), 14 (pull requests), 15 (Telegram) done: 286 tests (244 fast + 42 Docker),
+browser smoke 28/28. Next: 16 Codex/Gemini configs (verify flags first).

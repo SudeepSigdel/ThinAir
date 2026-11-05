@@ -57,6 +57,7 @@ class JobService:
         workers: int = 1,
         job_timeout_s: float = 3600,
         sweep_on_start: bool = True,
+        notifier: "Callable[[str], Awaitable[None]] | None" = None,
     ) -> None:
         self.events = events or EventStore()
         self._executors = executors
@@ -69,6 +70,8 @@ class JobService:
         self._running: dict[str, asyncio.Task[None]] = {}
         self._user_cancelled: set[str] = set()
         self._stopping = False
+        self._notifier = notifier
+        self._notifications: set[asyncio.Task[None]] = set()
 
     # ---- lifecycle -----------------------------------------------------------------------
     async def start(self) -> None:
@@ -279,6 +282,22 @@ class JobService:
             self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         finally:
             self._user_cancelled.discard(job_id)
+            if not self._stopping:
+                self._announce(job_id)
+
+    def _announce(self, job_id: str) -> None:
+        """Fire-and-forget notification; it can never delay or fail the job."""
+        if self._notifier is None:
+            return
+        task = asyncio.create_task(self._notify_safely(job_id), name=f"thinair-notify-{job_id}")
+        self._notifications.add(task)
+        task.add_done_callback(self._notifications.discard)
+
+    async def _notify_safely(self, job_id: str) -> None:
+        try:
+            await self._notifier(job_id)  # type: ignore[misc]
+        except Exception:
+            log.exception("job %s: notification failed", job_id)
 
     def _finish(
         self, job_id: str, status: JobStatus, code: str | None, message: str | None
