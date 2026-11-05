@@ -67,8 +67,14 @@ class Settings(BaseSettings):
             return cls.model_fields[info.field_name].default
         return v.strip() if isinstance(v, str) else v
 
+    # Optional external database, e.g. postgresql+psycopg://user:pass@host/thinair (needs the
+    # `postgres` extra). Default: one SQLite file in data_dir, which suits a single small server.
+    database_url: SecretStr | None = None
+
     @property
     def db_url(self) -> str:
+        if self.database_url and self.database_url.get_secret_value().strip():
+            return self.database_url.get_secret_value().strip()
         return f"sqlite:///{self.data_dir / 'thinair.db'}"
 
 

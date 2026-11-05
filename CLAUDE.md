@@ -38,6 +38,11 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Verify external CLI flags against official docs; record findings in docs/agents.md.
 
 ## Database
+- Default SQLite (WAL). `THINAIR_DATABASE_URL` (SecretStr) switches to Postgres; driver is the optional `postgres`
+  extra (`psycopg[binary]`), in Docker via build arg `EXTRAS` <- `THINAIR_EXTRAS`. `make_engine` uses pool +
+  pre_ping for non-SQLite. Enums are stored by *name*; on Postgres they are real enum types, so a new enum member
+  needs `ALTER TYPE ... ADD VALUE IF NOT EXISTS` in its migration (see 0002). `test_postgres_docker.py` runs
+  migrations up/down/up, the model/migration diff and the job API against postgres:17-alpine (CI installs the extra).
 - Models in `src/thinair/db/models.py`; migrations in `src/thinair/db/migrations/versions/`, applied at app startup.
 - After changing a model, generate a migration (a test fails if you forget). From the repo root:
   `uv run python -c "from alembic import command; from thinair.db.session import make_engine; from thinair.db.migrate import _config; e=make_engine('sqlite:///tmp_gen.db'); command.revision(_config(e), message='msg', autogenerate=True)"`
@@ -222,5 +227,5 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
 Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
-Phase 3: 17 egress allowlist done (Claude Code on by default). Next candidates: Postgres support; multiple users,
-remote runners and ACP need a design discussion with the owner first.
+Phase 3: 17 egress allowlist (Claude Code on by default) and 18 Postgres support done. Multiple users, remote
+runners and ACP need a design discussion with the owner first (see the open questions in the last summary).

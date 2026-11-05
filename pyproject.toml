@@ -18,6 +18,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Only for THINAIR_DATABASE_URL=postgresql+psycopg://...; SQLite needs nothing extra.
+postgres = ["psycopg[binary]>=3.2"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6"]
 
 [project.scripts]

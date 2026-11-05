@@ -240,6 +240,20 @@ if a task needs to install packages, add registries with `THINAIR_AGENT_EGRESS_E
 
 **Does Thinair call an AI API itself?** Never. It starts the agent's own CLI and reads its output.
 
+## Database
+
+By default Thinair keeps everything in one SQLite file in its data volume. Nothing to set up, and
+right for a single small server. To use Postgres instead (for example a managed database you
+already back up), build with the driver and point Thinair at it in `.env`:
+
+```sh
+THINAIR_EXTRAS=postgres
+THINAIR_DATABASE_URL=postgresql+psycopg://thinair:password@db.example.com:5432/thinair
+```
+
+Then `docker compose up -d --build`. Tables are created and migrated at startup, as with SQLite.
+There is no automatic copy from an existing SQLite file.
+
 ## Footprint
 
 Idle, Thinair is one Python process plus a tiny Docker API proxy. Nothing polls and no sandbox
@@ -260,7 +274,7 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
   notifications, Codex CLI and Gemini CLI configs (all done).
-- **Phase 3:** outbound allowlist for agent runs (done for Claude Code), multiple users, Postgres, remote runners,
+- **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done), multiple users, remote runners,
   Agent Client Protocol (ACP) adapter.
 
 ## Contributing

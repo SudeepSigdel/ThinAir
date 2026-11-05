@@ -26,6 +26,7 @@ services:
       context: .
       args:
         PIP_INDEX_URL: ${THINAIR_PIP_INDEX_URL:-}
+        EXTRAS: ${THINAIR_EXTRAS:-}
     restart: unless-stopped
     env_file:
       - path: .env

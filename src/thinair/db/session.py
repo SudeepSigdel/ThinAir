@@ -1,4 +1,5 @@
-"""Engine and session helpers. One small SQLite file; WAL so readers (SSE) don't block writers."""
+"""Engine and session helpers. Default: one small SQLite file, WAL so readers (SSE) don't block
+writers. `THINAIR_DATABASE_URL` switches to Postgres."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,16 +20,19 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:  # noqa: ANN001
 
 
 def make_engine(url: str) -> Engine:
-    engine = create_engine(url, connect_args={"check_same_thread": False})
     if url.startswith("sqlite"):
+        engine = create_engine(url, connect_args={"check_same_thread": False})
         event.listen(engine, "connect", _sqlite_pragmas)
-    return engine
+        return engine
+    # Postgres (or another server database): a small pool; check connections after idle periods.
+    return create_engine(url, pool_size=5, max_overflow=5, pool_pre_ping=True)
 
 
 @lru_cache
 def get_engine() -> Engine:
     s = get_settings()
-    s.data_dir.mkdir(parents=True, exist_ok=True)
+    if s.db_url.startswith("sqlite"):
+        s.data_dir.mkdir(parents=True, exist_ok=True)
     return make_engine(s.db_url)
 
 

@@ -1,7 +1,7 @@
 """pr jobs: Job.parent_job_id, JobResult.patch and .pr_url
 
 The new JobKind value "PR" needs no schema change on SQLite: the enum is stored as a VARCHAR
-without a CHECK constraint (Postgres would need `ALTER TYPE jobkind ADD VALUE`).
+without a CHECK constraint. On Postgres the enum type gets the new value (not removed on downgrade).
 
 Revision ID: 0002
 Revises: 0001
@@ -19,6 +19,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        # SQLAlchemy stores enum *names*; Postgres keeps them in a real enum type.
+        op.execute("ALTER TYPE jobkind ADD VALUE IF NOT EXISTS 'PR'")
     with op.batch_alter_table("job", schema=None) as batch_op:
         batch_op.add_column(
             sa.Column("parent_job_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True)
