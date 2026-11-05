@@ -27,6 +27,10 @@ Each job step runs in its own short-lived sandbox with hard limits:
 
 Keep `THINAIR_MAX_CONCURRENT_JOBS=1` on machines with 4 GB of RAM or less.
 
+Limits above what the machine has are capped automatically: on a 1-CPU VM the install and agent
+steps get 1 CPU, and profile tiers above 1 CPU are skipped (the report says so). 1 CPU works;
+everything just runs slower, since installs, builds, the agent CLI and the tests share one core.
+
 ## Disk
 
 | Image | Size | Built when |

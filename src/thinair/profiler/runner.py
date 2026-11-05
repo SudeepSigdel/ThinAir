@@ -80,15 +80,34 @@ async def run_profile(
             )
         return rec
 
-    return await ProfileSearch(
+    # Tiers above the host's CPU count can't run (Docker refuses them), and capping them would
+    # mislabel results ("2 CPU" really running on 1), so they are skipped and the report says so.
+    host = await asyncio.to_thread(mgr.host_cpus)
+    tiers = list(cfg.profile.cpus)
+    skipped: list[float] = []
+    if host:
+        skipped = [c for c in tiers if c > host]
+        tiers = [c for c in tiers if c <= host] or [float(host)]
+        if skipped and log:
+            log(f"[thinair] this machine has {host} CPU(s); skipping higher CPU tiers")
+
+    result = await ProfileSearch(
         probe,
-        cfg.profile.cpus,
+        tiers,
         cfg.profile.memory,
         base_timeout_s=cfg.timeouts.test_s,
         headroom=cfg.profile.headroom,
         confirm_runs=cfg.profile.confirm_runs,
         on_run=on_run,
     ).execute()
+    if skipped:
+        listed = ", ".join(f"{c:g}" for c in skipped)
+        result.notes.insert(
+            0,
+            f"This machine has {host} CPU(s), so the {listed} CPU tier(s) were skipped. "
+            "Results are only shown for CPU limits this machine can provide.",
+        )
+    return result
 
 
 async def profile_source(

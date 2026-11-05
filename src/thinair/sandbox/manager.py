@@ -94,6 +94,28 @@ class _Handle:
 class SandboxManager:
     def __init__(self, client: docker.DockerClient | None = None) -> None:
         self._client = client
+        self._host_cpus: int | None = None
+
+    def host_cpus(self) -> int:
+        """How many CPUs the Docker host offers (0 if unknown). Read once and cached.
+
+        Docker refuses to create a container whose `--cpus` exceeds this ("range of CPUs is from
+        0.01 to N"), so every limit is capped to it (see `fit`).
+        """
+        if self._host_cpus is None:
+            try:
+                self._host_cpus = max(0, int(self.client.info().get("NCPU") or 0))
+            except (DockerException, requests.exceptions.RequestException, TypeError, ValueError):
+                self._host_cpus = 0
+        return self._host_cpus
+
+    def fit(self, spec: SandboxSpec) -> SandboxSpec:
+        """Cap the CPU limit at what the host has, so default limits (2 CPUs for installs and
+        agents) also work on a 1-CPU VM. A limit is a ceiling, so nothing else changes."""
+        host = self.host_cpus()
+        if host and spec.cpus > host:
+            return spec.model_copy(update={"cpus": float(host)})
+        return spec
 
     @property
     def client(self) -> docker.DockerClient:
@@ -196,6 +218,7 @@ class SandboxManager:
         on_line: LineCallback | None = None,
         handle: _Handle | None = None,
     ) -> SandboxResult:
+        spec = self.fit(spec)
         handle = handle or _Handle()
         container: Container | None = None
         timed_out = threading.Event()

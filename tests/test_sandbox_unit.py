@@ -61,3 +61,39 @@ def test_bad_env_name_and_empty_command_rejected() -> None:
         spec(env={"BAD-NAME": "x"})
     with pytest.raises(ValidationError):
         SandboxSpec(image="i", command=[], job_id="j")
+
+
+class _FakeClient:
+    def __init__(self, ncpu=None, fail=False):
+        self.calls = 0
+        self.ncpu, self.fail = ncpu, fail
+
+    def info(self):
+        self.calls += 1
+        if self.fail:
+            from docker.errors import DockerException
+
+            raise DockerException("down")
+        return {"NCPU": self.ncpu}
+
+
+def test_cpu_limits_are_capped_to_the_host() -> None:
+    """Regression: Docker refuses --cpus above the host's count, so on a 1-CPU VM every job
+    (installs and agents default to 2 CPUs) failed with 'Could not create sandbox'."""
+    from thinair.sandbox.manager import SandboxManager
+
+    client = _FakeClient(ncpu=1)
+    mgr = SandboxManager(client)
+    assert mgr.fit(spec(cpus=2)).cpus == 1.0
+    assert mgr.fit(spec(cpus=0.5)).cpus == 0.5  # below the host: untouched
+    assert mgr.fit(spec(cpus=1)).cpus == 1
+    assert client.calls == 1  # asked once, then cached
+
+
+def test_unknown_host_cpu_count_leaves_limits_alone() -> None:
+    from thinair.sandbox.manager import SandboxManager
+
+    for client in (_FakeClient(fail=True), _FakeClient(ncpu=None)):
+        mgr = SandboxManager(client)
+        assert mgr.host_cpus() == 0
+        assert mgr.fit(spec(cpus=2)).cpus == 2

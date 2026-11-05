@@ -140,3 +140,10 @@ def test_janitor_spares_active_jobs(client) -> None:
         assert client.containers.get(c.id)
     finally:
         c.remove(force=True)
+
+
+async def test_cpu_request_above_the_host_is_capped_not_refused(mgr, client) -> None:
+    """Docker itself refuses this ("range of CPUs is from 0.01 to N"); Thinair caps it."""
+    res, _ = await run(mgr, sb(["true"], cpus=64))
+    assert res.exit_code == 0
+    assert mgr.host_cpus() == client.info()["NCPU"]

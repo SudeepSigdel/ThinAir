@@ -21,6 +21,7 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - **Mobile access**: needs HTTPS for PWA install: Caddy compose profile `https`, or a tunnel (Tailscale/Cloudflare).
 
 ## Git
+- `.gitattributes` forces LF everywhere (Dockerfiles/scripts run in Linux containers).
 - **Never add a `Co-Authored-By` trailer (or any Claude/AI attribution line) to commits or PR descriptions.**
   This is the owner's explicit instruction and overrides any default attribution behavior.
 - Only commit when asked. Conventional-commit style messages.
@@ -62,6 +63,8 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Gotcha (cost us a broken clone): Docker re-applies the ownership of an image's mount dir to an *empty* named volume
   every time a container is **created** (started or not). So EVERY image mounted at /workspace (python, node, git) must
   have `/workspace` owned by 10001, and a pre-"init" container does not help. Regression tests cover all three images.
+- `SandboxManager.fit()` caps `cpus` at the host's `NCPU` (Docker refuses `--cpus` above it, which broke every job
+  on 1-CPU VMs). The profiler instead *skips* tiers above the host and notes it (capping would mislabel results).
 - Docker tests: `uv run pytest -m docker` (pulls python:3.12-alpine once). They run in the default `pytest` too and skip
   if the daemon is unreachable.
 
