@@ -23,6 +23,10 @@ at, their dependencies, and coding agents) inside Docker containers.
 - Test runs have no network. Install and agent runs do (they need package registries and the
   model provider).
 - Thinair reaches Docker through docker-socket-proxy, limited to the API sections it uses.
+- The optional GitHub token (`THINAIR_GITHUB_TOKEN`) is passed only to the clone container,
+  through git's environment config scoped to `https://github.com/`. It is never in argv,
+  `.git/config`, the workspace, the database or logs, and never reaches install, test or agent
+  containers. Malformed values are refused so they can't inject extra HTTP headers.
 - The API requires a token. Only SHA-256 hashes are stored, wrong tokens are rate-limited, and the
   browser session is an HttpOnly, SameSite=Strict cookie. The web app ships a strict CSP and
   renders all job output as plain text.
@@ -38,5 +42,8 @@ at, their dependencies, and coding agents) inside Docker containers.
   inside their sandbox. Code they work on could trick them into reading and sending out the login
   mounted in that sandbox. Only run agent tasks on repositories you trust, and rotate the login
   (`docker volume rm thinair-auth-<agent>`, then log in again) if in doubt.
+- **The GitHub token is visible to the host's Docker users** while a clone runs (`docker inspect`
+  shows container environment). That is the same group that can already control Thinair. Use a
+  fine-grained, read-only token limited to the repos you need.
 - **No outbound filtering yet** for install and agent runs (planned).
 - Do not share one Thinair server between people. Every agent run uses the owner's login.

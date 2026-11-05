@@ -114,7 +114,7 @@ def test_undetectable_project_explains_what_to_do() -> None:
         "https://github.com/o/r?x=1",
     ],
 )
-def test_only_public_github_https_urls_accepted(url: str) -> None:
+def test_only_github_https_urls_accepted(url: str) -> None:
     with pytest.raises(PrepareError) as e:
         GitSource(url).validate()
     assert e.value.code == "bad_repo_url"

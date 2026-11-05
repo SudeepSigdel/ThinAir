@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,17 @@ class Settings(BaseSettings):
     # Optional package mirrors for the sandbox install step (useful on restricted networks).
     pip_index_url: str | None = None
     npm_registry: str | None = None
+
+    # Optional GitHub token for cloning private repositories (see thinair/github.py). Given
+    # only to the clone container; never stored, logged or passed to install/test/agent runs.
+    github_token: SecretStr | None = None
+    github_token_file: Path | None = None  # alternative for Docker secrets
+
+    @field_validator("github_token_file", mode="before")
+    @classmethod
+    def _blank_path_is_unset(cls, v: object) -> object:
+        # `THINAIR_GITHUB_TOKEN_FILE=` (blank, as in .env.example) would otherwise become Path(".").
+        return None if isinstance(v, str) and not v.strip() else v
 
     @property
     def db_url(self) -> str:

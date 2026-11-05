@@ -15,7 +15,7 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - SSE (not WebSockets) for logs. UI = static HTML + one plain JS file calling the JSON API, PWA. No Node build step.
   (Changed in step 10 from Jinja + HTMX: zero new deps, nothing vendored, and a strict CSP with no inline code.)
 - Agent commands are argv lists (no shell); `{task}` is one argv element.
-- License MIT. Public repos only in MVP.
+- License MIT. GitHub only; private repos via an optional token (phase 2, step 13).
 - **Idle cost must be near zero**: one uvicorn process, workers block on an asyncio queue (no polling),
   janitor runs at startup + rarely, sandboxes exist only during jobs, mem_limit on every service.
 - **Mobile access**: needs HTTPS for PWA install: Caddy compose profile `https`, or a tunnel (Tailscale/Cloudflare).
@@ -71,7 +71,12 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Projects (`src/thinair/project/`)
 - `config.py`: `thinair.yaml` schema (unknown keys are errors; env values coerced to strings). `detect.py`: stack from
   top-level filenames + overrides -> `ResolvedProject`. `prepare.py`: volume -> clone (in a sandbox) or tar upload
-  -> detect -> install. Public GitHub HTTPS URLs only for now (private repos later: clone-only token, never in sandboxes).
+  -> detect -> install. GitHub HTTPS URLs only.
+- Private repos (`src/thinair/github.py`): `THINAIR_GITHUB_TOKEN` or `_FILE`, read per call, format-checked
+  (`[A-Za-z0-9_]{20,255}`, no header injection). Only `clone_spec()` gets it, as `GIT_CONFIG_COUNT/KEY_0/VALUE_0`
+  = `http.https://github.com/.extraHeader: Authorization: Basic b64(x-access-token:TOKEN)`; token and b64 are
+  both in `redact`. Never in argv, .git/config, DB, install/test/agent containers. A blank env value falls back to
+  the file (`.env.example` has `THINAIR_GITHUB_TOKEN=`). Docker tests use a fake token: GitHub rejects it -> `clone_failed`.
 - Dependencies are installed into the workspace volume (`/workspace/.venv`, `node_modules`) so network-less test
   containers can use them. Sandbox base images are built from `sandbox/images/*.Dockerfile` on first use.
 - Fixtures in `tests/fixtures/` hold ~150 MB in their tests; expected profiler minimum is the 256m tier.
@@ -105,7 +110,7 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Jobs (`src/thinair/jobs/`)
 - `service.JobService`: in-memory `asyncio.Queue` + N workers (`max_concurrent_jobs`), blocked on `queue.get()` (no polling).
   Jobs are DB rows; on start, RUNNING -> failed `interrupted`, QUEUED -> re-queued; leftover sandboxes are swept
-  (`THINAIR_SWEEP_ON_START`, off in tests). `submit()` validates the URL (public GitHub only) and raises `PrepareError`.
+  (`THINAIR_SWEEP_ON_START`, off in tests). `submit()` validates the URL (GitHub only) and raises `PrepareError`.
   `cancel()` works for queued and running jobs; whole-job limit `THINAIR_JOB_TIMEOUT_S`.
   Errors become `error_code` + a user-safe `error_message`; unexpected exceptions are logged server-side only.
 - Executors are plugged in (`dict[JobKind, Executor]`) so the machinery is tested with fakes; `executors.py` holds the
@@ -169,5 +174,6 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Status
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
-Next (phase 2): private repos (clone-only token), Codex/Gemini configs (verify flags first), PR creation,
-Telegram notifications.
+Phase 2: step 13 (private repos via clone-only token) done: 245 tests (206 fast + 39 Docker). Next: 14 PR creation
+(store full binary patch + base SHA; `pr` job re-clones, applies, pushes `thinair/<job-id>`, opens PR via REST),
+15 Telegram notifications (outbound only), 16 Codex/Gemini configs (verify flags first).

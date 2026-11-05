@@ -82,7 +82,48 @@ async def test_failing_install_gives_actionable_error_and_cleans_up(mgr, cleanup
     # the cleanup fixture asserts that no workspace volume remains
 
 
-async def test_clone_of_missing_repo_explains_why(mgr, cleanup) -> None:
+FAKE_TOKEN = "github_pat_" + "Zz9" * 20
+
+
+async def test_git_image_reads_the_token_from_env_and_output_is_masked(mgr, cleanup) -> None:
+    """The token reaches git only through GIT_CONFIG_* env (needs git >= 2.31 in the image)."""
+    from thinair.github import git_auth_env
+    from thinair.project.prepare import GIT_IMAGE, ensure_image
+
+    await ensure_image(mgr, "git", lambda _: None)
+    env, redact = git_auth_env(FAKE_TOKEN)
+    res, lines = await mgr.run_capture(
+        SandboxSpec(
+            image=GIT_IMAGE,
+            command=["config", "--get", "http.https://github.com/.extraheader"],
+            job_id="t5tok",
+            env={"HOME": "/tmp", **env},
+            redact=redact,
+            timeout_s=30,
+        )
+    )
+    assert res.exit_code == 0, lines
+    assert lines == ["Authorization: Basic ***"]
+
+
+async def test_rejected_token_explains_why_and_never_leaks(mgr, cleanup, monkeypatch) -> None:
+    """GitHub refuses a bad token even for a public repo; the error must point at the token."""
+    from thinair.config import get_settings
+
+    monkeypatch.setenv("THINAIR_GITHUB_TOKEN", FAKE_TOKEN)
+    get_settings.cache_clear()
+    logs: list[str] = []
+    with pytest.raises(PrepareError) as e:
+        await prepare_workspace(
+            mgr, GitSource("https://github.com/octocat/Hello-World"), "t5badtok", logs.append
+        )
+    assert e.value.code == "clone_failed", e.value.message
+    assert "THINAIR_GITHUB_TOKEN" in e.value.message and "expired" in e.value.message
+    assert not [ln for ln in [e.value.message, *logs] if FAKE_TOKEN in ln]
+
+
+async def test_clone_of_missing_repo_explains_why(mgr, cleanup, monkeypatch) -> None:
+    monkeypatch.setenv("THINAIR_GITHUB_TOKEN", "")  # a developer's .env must not change this
     url = "https://github.com/thinair-nonexistent/does-not-exist-xyz"
     with pytest.raises(PrepareError) as e:
         await prepare_workspace(mgr, GitSource(url), "t5git", lambda _: None)

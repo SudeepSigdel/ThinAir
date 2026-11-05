@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from thinair.config import get_settings
+from thinair.github import GitHubTokenError, git_auth_env, github_token
 from thinair.project.config import ProjectConfig, ProjectConfigError, parse_project_config
 from thinair.project.detect import IMAGES, PYTHON_IMAGE, ResolvedProject, resolve_project
 from thinair.sandbox.manager import SandboxManager
@@ -53,7 +54,7 @@ class GitSource:
         if not GITHUB_URL.match(self.url):
             raise PrepareError(
                 "bad_repo_url",
-                "Only public GitHub repositories are supported for now, "
+                "Only GitHub repositories are supported for now, "
                 "e.g. https://github.com/owner/repo",
             )
         if self.ref is not None and not GIT_REF.match(self.ref):
@@ -194,37 +195,60 @@ async def _load_source(mgr, source, job_id, volume, log) -> str | None:
         await asyncio.to_thread(mgr.put_tar, volume, PYTHON_IMAGE, data, job_id)
         return None
 
-    log(f"[thinair] cloning {source.url}")
+    try:
+        token = github_token()
+    except GitHubTokenError as e:
+        raise PrepareError("bad_github_token", str(e)) from None
+    log(f"[thinair] cloning {source.url}" + (" (with the GitHub token)" if token else ""))
     await ensure_image(mgr, "git", log)
+    tail: list[str] = []
+    spec = clone_spec(job_id, volume, source, token)
+    res = await mgr.run(spec, lambda ln: (tail.append(ln), log(ln)))
+    if res.exit_code != 0:
+        if token:
+            hint = (
+                "Check the URL, and that THINAIR_GITHUB_TOKEN has read access to this "
+                "repository and has not expired."
+            )
+        else:
+            hint = (
+                "It may not exist, or it may be private: set THINAIR_GITHUB_TOKEN to clone "
+                "private repositories."
+            )
+        raise PrepareError(
+            "clone_failed",
+            f"Could not clone the repository. {hint} Last output: " + " | ".join(tail[-3:]),
+        )
+    code, lines = await _read_only(mgr, job_id, volume, ["rev-parse", "HEAD"], image=GIT_IMAGE)
+    return lines[0] if code == 0 and lines else None
+
+
+def clone_spec(job_id: str, volume: str, source: GitSource, token: str | None) -> SandboxSpec:
+    """The clone sandbox. With a token, git reads it from env (never argv or .git/config) and
+    it is masked in the output."""
     # The image's entrypoint is `git`, so the command holds only git's arguments.
     clone = ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never"]
     clone += ["clone", "--depth", "1", "--single-branch"]
     if source.ref:
         clone += ["--branch", source.ref]
     clone += ["--", source.url, "."]
-    tail: list[str] = []
-    res = await mgr.run(
-        _spec(
-            job_id,
-            volume,
-            GIT_IMAGE,
-            clone,
-            network=True,
-            cpus=1,
-            memory_bytes=512 * 1024**2,
-            timeout_s=300,
-            env={"HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0"},  # noqa: S108
-        ),
-        lambda ln: (tail.append(ln), log(ln)),
+    env = {"HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0"}  # noqa: S108
+    redact: list[str] = []
+    if token:
+        auth_env, redact = git_auth_env(token)
+        env.update(auth_env)
+    return _spec(
+        job_id,
+        volume,
+        GIT_IMAGE,
+        clone,
+        network=True,
+        cpus=1,
+        memory_bytes=512 * 1024**2,
+        timeout_s=300,
+        env=env,
+        redact=redact,
     )
-    if res.exit_code != 0:
-        raise PrepareError(
-            "clone_failed",
-            "Could not clone the repository. It may not exist, or it may be private "
-            "(private repositories are not supported yet). Last output: " + " | ".join(tail[-3:]),
-        )
-    code, lines = await _read_only(mgr, job_id, volume, ["rev-parse", "HEAD"], image=GIT_IMAGE)
-    return lines[0] if code == 0 and lines else None
 
 
 def mirror_env() -> dict[str, str]:

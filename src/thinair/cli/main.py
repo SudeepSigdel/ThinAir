@@ -104,7 +104,9 @@ def _utf8_output() -> None:
 
 @app.command()
 def profile(
-    target: str = typer.Argument(..., help="Public GitHub URL, or a local project directory"),
+    target: str = typer.Argument(
+        ..., help="GitHub URL (private repos need THINAIR_GITHUB_TOKEN), or a local directory"
+    ),
     json_out: Path | None = typer.Option(None, "--json", help="Also write the JSON report here"),
     md_out: Path | None = typer.Option(None, "--md", help="Also write the Markdown report here"),
 ) -> None:

@@ -116,7 +116,7 @@ def list_repos() -> list[Repo]:
 
 @router.post("/repos", response_model=RepoOut, status_code=201, tags=["repos"])
 def add_repo(body: RepoIn) -> Repo:
-    """Register a public GitHub repository (idempotent)."""
+    """Register a GitHub repository (idempotent). Private ones need THINAIR_GITHUB_TOKEN."""
     source = GitSource(body.url.strip().rstrip("/"))
     try:
         source.validate()

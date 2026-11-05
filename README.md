@@ -23,8 +23,8 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
-Not yet built: private repositories, opening pull requests, more agents (Codex, Gemini),
-notifications, multiple users. See [the roadmap](#roadmap).
+Private GitHub repositories work with a token (see below). Not yet built: opening pull
+requests, more agents (Codex, Gemini), notifications, multiple users. See [the roadmap](#roadmap).
 
 ## Quickstart (about 5 minutes)
 
@@ -78,6 +78,25 @@ Then choose **Agent task** in the app, pick the agent, describe the task, and st
 the agent's messages live, its summary, and the full diff. Nothing is pushed anywhere.
 
 Adding another agent takes one YAML file, no code changes. See [docs/agents.md](docs/agents.md).
+
+## Private repositories
+
+Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
+choose **Only select repositories**, pick the repos, and give it **Contents: Read-only** (nothing
+else). Put it in `.env`, then restart (`docker compose up -d`):
+
+```sh
+THINAIR_GITHUB_TOKEN=github_pat_...
+```
+
+Or keep it in a file (Docker secrets, chmod 600) and set `THINAIR_GITHUB_TOKEN_FILE` to its path.
+
+The token is used **only by the short-lived clone container**. Git reads it from that
+container's environment, so it never appears in a command line, in the cloned `.git/config` or in
+the workspace, and it is masked in every log. Install, test and agent containers never get it, so
+code in the repo and the agent can't read it. It is never stored in Thinair's database. Public
+repos keep working with the same token. When the token expires, clones fail with a message
+saying so: create a new one and restart.
 
 ## Configuring a project: `thinair.yaml`
 
@@ -141,6 +160,8 @@ The HTTP API is documented at `/docs` on your server (log in there with the same
   wrong tokens are rate-limited, and the phone app uses an HttpOnly, SameSite=Strict cookie.
   The web app has a strict Content-Security-Policy and renders all job output as text.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
+- **GitHub token (optional):** read only by the clone container, never by install, test or agent
+  runs, and never stored or logged. See [Private repositories](#private-repositories).
 - **Agents and your login:** see the FAQ below. Only run agents on repositories you trust.
 
 Found a security problem? See [SECURITY.md](SECURITY.md).
@@ -187,7 +208,7 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 ## Roadmap
 
-- **Phase 2:** private repositories (read-only token used only for cloning), Codex CLI and
+- **Phase 2:** private repositories (done: read-only token used only for cloning), Codex CLI and
   Gemini CLI configs, notifications (Telegram plugin), opening a pull request from an agent's diff.
 - **Phase 3:** outbound allowlist for agent runs, multiple users, Postgres, remote runners,
   Agent Client Protocol (ACP) adapter.
