@@ -1,0 +1,4 @@
+# Always LF in the working copy, on every OS. Dockerfiles, shell snippets and YAML that end up
+# inside Linux containers can break with Windows (CRLF) line endings.
+* text=auto eol=lf
+*.png binary
