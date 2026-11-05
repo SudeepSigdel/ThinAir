@@ -14,6 +14,7 @@ LABEL_JOB = "thinair.job"
 
 _VOLUME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NETWORK_RE = re.compile(r"^thinair-net-[A-Za-z0-9_.-]{1,100}$")
 _SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmgt]?)b?$", re.IGNORECASE)
 _UNITS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
 
@@ -62,6 +63,8 @@ class SandboxSpec(BaseModel):
     timeout_s: float = Field(default=600, gt=0)
 
     network: bool = False  # off unless a phase explicitly needs it
+    # Join this Thinair-made internal network instead (egress via the job's allowlist proxy).
+    network_name: str | None = None
     read_only_rootfs: bool = True  # writable paths: mounted volumes and /tmp
     tmpfs_tmp_bytes: int = 256 * 1024**2
     # /tmp is noexec by default; the install phase turns this off (installers may run helpers).
@@ -70,6 +73,13 @@ class SandboxSpec(BaseModel):
     # Values to mask in captured output (e.g. tokens passed via env).
     redact: list[str] = Field(default_factory=list)
     max_output_bytes: int = 5 * 1024**2
+
+    @field_validator("network_name")
+    @classmethod
+    def _network_name(cls, v: str | None) -> str | None:
+        if v is not None and not NETWORK_RE.match(v):
+            raise ValueError("network_name must be a Thinair network (thinair-net-...)")
+        return v
 
     @field_validator("env")
     @classmethod

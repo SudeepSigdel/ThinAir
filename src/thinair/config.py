@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,12 @@ class Settings(BaseSettings):
     # to have commits linked to your account).
     git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")
     git_author_email: str = Field(default="thinair@localhost", pattern=r"^[^\s<>@]+@[^\s<>@]+$")
+
+    # Agent runs whose config lists `egress` hosts can reach only those (via a per-run proxy).
+    # "open" turns the allowlist off. Extra hosts (comma-separated) are added for every agent,
+    # e.g. registry.npmjs.org,pypi.org,files.pythonhosted.org if agents should install packages.
+    agent_egress: Literal["allowlist", "open"] = "allowlist"
+    agent_egress_extra_hosts: str = ""
 
     # Optional Telegram notifications when a job finishes (outbound only; see thinair/notify.py).
     telegram_bot_token: SecretStr | None = None

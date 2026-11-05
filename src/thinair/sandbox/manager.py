@@ -59,7 +59,7 @@ def build_container_args(spec: SandboxSpec) -> dict[str, Any]:
         "mem_limit": spec.memory_bytes,
         "memswap_limit": spec.memory_bytes,
         "pids_limit": spec.pids_limit,
-        "network_mode": "bridge" if spec.network else "none",
+        "network_mode": spec.network_name or ("bridge" if spec.network else "none"),
         "volumes": {
             m.volume: {"bind": m.path, "mode": "ro" if m.read_only else "rw"} for m in spec.mounts
         },
@@ -138,6 +138,47 @@ class SandboxManager:
             self.client.volumes.get(name)
         except docker.errors.NotFound:
             self.client.volumes.create(name=name, labels=labels)
+
+    # ---- networks and service containers (egress proxy) ---------------------------------
+    def create_internal_network(self, name: str, job_id: str) -> None:
+        """A network with no route out: its containers reach only each other."""
+        self.client.networks.create(
+            name, driver="bridge", internal=True, labels={LABEL_MANAGED: "true", LABEL_JOB: job_id}
+        )
+
+    def remove_network(self, name: str) -> None:
+        with contextlib.suppress(docker.errors.NotFound):
+            self.client.networks.get(name).remove()
+
+    def start_service(
+        self, spec: SandboxSpec, name: str, also_on: list[str] | None = None
+    ) -> Container:
+        """Start a long-running, hardened container (same limits as `run`) and return it.
+        `also_on` connects it to more networks (e.g. "bridge" for a way out) before it starts."""
+        args = build_container_args(self.fit(spec))
+        try:
+            c = self.client.containers.create(name=name, **args)
+        except (APIError, requests.exceptions.RequestException) as e:
+            raise SandboxError(f"Could not create {name}: {e}") from e
+        try:
+            for net in also_on or []:
+                self.client.networks.get(net).connect(c)
+            c.start()
+        except (APIError, requests.exceptions.RequestException) as e:
+            with contextlib.suppress(DockerException):
+                c.remove(force=True)
+            raise SandboxError(f"Could not start {name}: {e}") from e
+        return c
+
+    def stop_service(self, container: Container) -> list[str]:
+        """Remove a service container and return its output lines."""
+        lines: list[str] = []
+        with contextlib.suppress(DockerException, requests.exceptions.RequestException):
+            raw = container.logs(stdout=True, stderr=True)
+            lines = raw.decode("utf-8", errors="replace").splitlines()[-500:]
+        with contextlib.suppress(DockerException, requests.exceptions.RequestException):
+            container.remove(force=True, v=True)
+        return lines
 
     def build_image_from_text(self, tag: str, dockerfile: str) -> None:
         """Build from Dockerfile text with no build context (only FROM/RUN/COPY --from)."""

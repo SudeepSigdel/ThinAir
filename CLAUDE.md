@@ -198,6 +198,18 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Messages: repo, kind, status, task first line, error (<=300) or result (files changed / PR URL / minimum config),
   link via `THINAIR_PUBLIC_URL`. Never logs, diffs or summaries. Cancelled jobs are silent. CLI: `thinair notify-test`.
 
+## Egress allowlist (`src/thinair/sandbox/egress*.py`, phase 3 step 17)
+- `egress_proxy.py`: stdlib asyncio CONNECT proxy, sent as `python -u -c <source>` (keep it self-contained). Only
+  `CONNECT name:443` with `host_allowed` (exact or `*.dom`, no IP literals); prints `[egress] allowed|blocked <host>`.
+- `EgressGateway`: internal network `thinair-net-<job>` (labelled; janitor sweeps networks) + proxy container
+  `thinair-egress-<job>` via `SandboxManager.start_service(spec, name, also_on=["bridge"])` (same hardening as runs,
+  64 MiB). Agent spec gets `network_name` + `HTTPS_PROXY`/`http_proxy`... `SandboxSpec.network_name` only accepts
+  `thinair-net-*`. Compose's socket proxy needs `NETWORKS: 1`.
+- `AgentConfig.egress` (None = open). Claude: api.anthropic.com, claude.ai, platform.claude.com (verified with the
+  real CLI + fake key). Codex honours the proxy (tried api.openai.com, chatgpt.com, api.github.com) but login hosts
+  are undocumented -> open. Gemini: undocumented -> open. Settings `THINAIR_AGENT_EGRESS=allowlist|open`,
+  `THINAIR_AGENT_EGRESS_EXTRA_HOSTS`. Tests: `test_egress.py` (in-process proxy), `test_egress_docker.py`.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.
@@ -210,5 +222,5 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
 Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
-Phase 3 plan: 17 egress allowlist for agent runs (per-job proxy container on an internal network), then
-Postgres support; multiple users / remote runners / ACP need a design discussion with the owner first.
+Phase 3: 17 egress allowlist done (Claude Code on by default). Next candidates: Postgres support; multiple users,
+remote runners and ACP need a design discussion with the owner first.

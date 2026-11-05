@@ -19,19 +19,26 @@ def sweep(
     volume_max_age: timedelta = timedelta(hours=6),
     keep_job_ids: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
-    """Delete Thinair-labelled containers and stale volumes.
+    """Delete Thinair-labelled containers, networks and stale volumes.
 
     At process start nothing can legitimately be running, so all labelled containers go.
     `keep_job_ids` protects jobs that are still active when called later. Volumes are only
     removed after `volume_max_age` so a just-created workspace is never raced.
     """
-    removed = {"containers": 0, "volumes": 0}
+    removed = {"containers": 0, "volumes": 0, "networks": 0}
     for c in client.containers.list(all=True, filters=_FILTER):
         if c.labels.get("thinair.job") in keep_job_ids:
             continue
         with contextlib.suppress(DockerException):
             c.remove(force=True, v=True)
             removed["containers"] += 1
+    # Per-job egress networks: their containers are gone now, so they are unused.
+    for n in client.networks.list(filters=_FILTER):
+        if n.attrs.get("Labels", {}).get("thinair.job") in keep_job_ids:
+            continue
+        with contextlib.suppress(DockerException):
+            n.remove()
+            removed["networks"] += 1
     cutoff = datetime.now(UTC) - volume_max_age
     for v in client.volumes.list(filters=_FILTER):
         if v.attrs.get("Labels", {}).get("thinair.job") in keep_job_ids:

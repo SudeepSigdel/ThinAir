@@ -37,6 +37,13 @@ auth:
   hint: >-
     Claude Code is not logged in for this Thinair server. Run `thinair auth claude` on the
     server (or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+# Outbound allowlist (Claude Code honours HTTPS_PROXY; hosts from its network-config docs):
+# the API, and claude.ai / platform.claude.com for subscription login and token refresh.
+# Telemetry hosts are off anyway (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).
+egress:
+  - api.anthropic.com
+  - claude.ai
+  - platform.claude.com
 auth_error_patterns:
   - authentication_failed
   - not logged in

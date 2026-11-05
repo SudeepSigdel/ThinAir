@@ -206,6 +206,11 @@ The HTTP API is documented at `/docs` on your server (log in there with the same
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
 - **GitHub token (optional):** used only by clone/push containers and Thinair's own GitHub API
   calls, never by install, test or agent runs, and never stored or logged. See [Private repositories](#private-repositories).
+- **Outbound allowlist for agents:** Claude Code runs can reach only `api.anthropic.com`,
+  `claude.ai` and `platform.claude.com`. The agent's container sits on a private network whose
+  only way out is a per-run proxy that tunnels HTTPS to allowlisted host names and refuses the
+  rest (blocked hosts are listed in the job log). Codex and Gemini CLI are not restricted yet.
+  See [docs/agents.md](docs/agents.md#outbound-allowlist).
 - **Agents and your login:** see the FAQ below. Only run agents on repositories you trust.
 
 Found a security problem? See [SECURITY.md](SECURITY.md).
@@ -230,7 +235,8 @@ gives the same warning. Use agent tasks on your own or trusted code, and revoke 
 login if in doubt (`docker volume rm thinair-auth-claude`).
 
 **Why does Thinair need network access in agent runs?** The agent has to reach its model
-provider. Profile test runs have no network.
+provider. Profile test runs have no network. Claude Code runs are limited to Anthropic's hosts;
+if a task needs to install packages, add registries with `THINAIR_AGENT_EGRESS_EXTRA_HOSTS`.
 
 **Does Thinair call an AI API itself?** Never. It starts the agent's own CLI and reads its output.
 
@@ -254,7 +260,7 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
   notifications, Codex CLI and Gemini CLI configs (all done).
-- **Phase 3:** outbound allowlist for agent runs, multiple users, Postgres, remote runners,
+- **Phase 3:** outbound allowlist for agent runs (done for Claude Code), multiple users, Postgres, remote runners,
   Agent Client Protocol (ACP) adapter.
 
 ## Contributing

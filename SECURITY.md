@@ -46,5 +46,8 @@ at, their dependencies, and coding agents) inside Docker containers.
 - **The GitHub token is visible to the host's Docker users** while a clone runs (`docker inspect`
   shows container environment). That is the same group that can already control Thinair. Use a
   fine-grained, read-only token limited to the repos you need.
-- **No outbound filtering yet** for install and agent runs (planned).
+- **Outbound filtering covers Claude Code agent runs only.** Install steps, Codex and Gemini CLI
+  runs still have open network access. An allowlisted host that accepts uploads (for example an
+  API with an attacker's own key) can still receive data, so the allowlist narrows exfiltration;
+  it does not make a malicious repository safe.
 - Do not share one Thinair server between people. Every agent run uses the owner's login.

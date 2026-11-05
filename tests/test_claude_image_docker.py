@@ -62,3 +62,28 @@ async def test_real_claude_code_runs_as_the_sandbox_user_and_reports_logged_out(
     finally:
         mgr.remove_volume(prepared.volume)
         mgr.remove_volume(claude_test_cfg.auth_volume)
+
+
+async def test_real_claude_code_goes_through_the_egress_allowlist(mgr, claude_test_cfg) -> None:
+    """With an obviously fake API key (no account): Claude Code must reach api.anthropic.com
+    through the per-run proxy, and the rejected key must map to the login hint."""
+    mgr.remove_volume(claude_test_cfg.auth_volume)
+    prepared = await prepare_workspace(
+        mgr, DirSource(FIXTURES / "py_fastapi_app"), "ccegress", lambda _: None
+    )
+    fake = "sk-ant-api03-thinair-test-not-a-real-key"
+    try:
+        adapter = CLIAdapter(
+            claude_test_cfg, mgr, "ccegress", prepared, host_env={"ANTHROPIC_API_KEY": fake}
+        )
+        await adapter.prepare(lambda _: None)  # a passed-through key skips the login check
+        events = [ev async for ev in adapter.run("say hi")]
+    finally:
+        mgr.remove_volume(prepared.volume)
+        mgr.remove_volume(claude_test_cfg.auth_volume)
+    r = adapter.result()
+    logs = " ".join(r.logs_tail) + " ".join(e.text for e in events)
+    assert "outbound traffic limited to: api.anthropic.com" in logs
+    assert "[egress] allowed api.anthropic.com" in logs, r.logs_tail
+    assert not r.success and fake not in logs
+    assert r.error_code == "agent_not_authenticated", (r.error_code, r.error_message, r.logs_tail)

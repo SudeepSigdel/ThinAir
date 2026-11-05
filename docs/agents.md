@@ -35,7 +35,8 @@ another person's tasks. Check your plan's terms for automated use.
   for your machine because the container is the boundary. It is **not** safe for your login:
   as Claude Code's own docs warn, a malicious repository could get the agent to read and send out
   anything inside the container, including the credentials in its login volume. **Only run agents
-  on repositories you trust.** An outbound allowlist (egress proxy) is planned.
+  on repositories you trust.** Claude Code runs are limited to Anthropic's hosts (see
+  [Outbound allowlist](#outbound-allowlist)); that narrows, but does not remove, this risk.
 
 ## Claude Code: what was verified (2026-11-05)
 
@@ -111,6 +112,28 @@ Optional settings that only exist in `settings.json` (put them in
 `/thinair-auth/.gemini/settings.json`): `privacy.usageStatisticsEnabled`,
 `general.enableAutoUpdate`, `model.maxSessionTurns`.
 
+## Outbound allowlist
+
+An agent whose config has an `egress:` list runs on a private Docker network
+(`thinair-net-<job>`) with no route out. Its only way out is a per-run proxy container on that
+network (also on the normal bridge), passed in as `HTTPS_PROXY`. The proxy accepts only
+`CONNECT <host>:443` for host names on the list (`*.example.com` matches subdomains, not the
+apex); IP addresses, other ports and plain HTTP are refused. Nothing is decrypted. The job log
+says which hosts were blocked. The network and proxy exist only during the run.
+
+| Agent | `egress` | Verified how |
+|---|---|---|
+| Claude Code | `api.anthropic.com`, `claude.ai`, `platform.claude.com` | Hosts from the network-config docs (API; claude.ai sign-in; OAuth token exchange and refresh). Proxy use checked by running the real CLI with a fake API key: it tunnelled to `api.anthropic.com` and the key was rejected |
+| Codex | not set (open) | Honours `HTTPS_PROXY` (checked with a fake API key; it tried `api.openai.com`, `chatgpt.com` and `api.github.com`). The hosts a ChatGPT-account login needs are not documented |
+| Gemini CLI | not set (open) | Proxy support and hosts are not documented |
+
+To restrict Codex anyway, copy `codex.yaml` into `$THINAIR_DATA_DIR/agents/` and add e.g.
+`egress: [api.openai.com, chatgpt.com]`; blocked hosts show up in the job log.
+
+Settings: `THINAIR_AGENT_EGRESS=open` turns the allowlist off for every agent.
+`THINAIR_AGENT_EGRESS_EXTRA_HOSTS=registry.npmjs.org,pypi.org,files.pythonhosted.org` adds hosts
+for every agent (needed if tasks install packages; each one is another place data could go).
+
 ## Adding an agent
 
 Drop `<id>.yaml` into `$THINAIR_DATA_DIR/agents/` (`/data/agents/` in Docker). A file whose id
@@ -136,6 +159,7 @@ auth:
 auth_error_patterns: [not logged in]         # output that means "bad login"
 limits: {cpus: 2, memory: 2g, pids: 1024, timeout_s: 1800}
 network: true
+egress: [api.my-agent.example]          # optional allowlist (the CLI must honour HTTPS_PROXY)
 ```
 
 The task is always passed as one argument and never through a shell. A task that starts with `-`

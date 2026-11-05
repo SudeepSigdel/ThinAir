@@ -23,7 +23,9 @@ from typing import Any, Protocol
 
 from thinair.agents.config import AgentConfig
 from thinair.agents.stream import AgentEvent, StreamParser
+from thinair.config import get_settings
 from thinair.project.prepare import GIT_IMAGE, PreparedProject, ensure_image
+from thinair.sandbox.egress import EgressGateway
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
 
@@ -139,6 +141,7 @@ class CLIAdapter:
         self._base: str | None = None
         self._result = AgentResult()
         self._tail: deque[str] = deque(maxlen=40)
+        self._egress_log: list[str] = []
 
     # -- helpers --
     def _mounts(self, workspace_ro: bool = False) -> list[VolumeMount]:
@@ -170,6 +173,15 @@ class CLIAdapter:
         }
         base.update(kw)
         return SandboxSpec(**base)
+
+    def _gateway(self) -> EgressGateway | None:
+        """An allowlisting proxy for this run, if the agent declares `egress` and the owner has
+        not turned the allowlist off (THINAIR_AGENT_EGRESS=open)."""
+        s = get_settings()
+        if self.cfg.egress is None or s.agent_egress != "allowlist" or not self.cfg.network:
+            return None
+        extra = [h.strip() for h in s.agent_egress_extra_hosts.split(",") if h.strip()]
+        return EgressGateway(self._mgr, self._job, [*self.cfg.egress, *extra])
 
     async def _git(self, args: list[str], *, max_bytes: int = 64 * 1024) -> tuple[int, list[str]]:
         res, lines = await self._mgr.run_capture(
@@ -240,19 +252,37 @@ class CLIAdapter:
                 queue.put_nowait(ev)
             queue.put_nowait(None)
 
-        runner = asyncio.create_task(self._mgr.run(self._spec(self.cfg.argv(task)), on_line))
-        runner.add_done_callback(on_done)
+        gateway = self._gateway()
+        spec_kw: dict[str, Any] = {}
+        if gateway is not None:
+            await gateway.start()
+            spec_kw = {"network_name": gateway.network, "env": {**self._env(), **gateway.env}}
+            yield AgentEvent(
+                "log", "[thinair] outbound traffic limited to: " + ", ".join(gateway.allow)
+            )
         try:
-            while (ev := await queue.get()) is not None:
-                if ev.kind == "result":
-                    result_event = ev
-                elif ev.kind == "auth_error":
-                    auth_hit = True
-                yield ev
+            spec = self._spec(self.cfg.argv(task), **spec_kw)
+            runner = asyncio.create_task(self._mgr.run(spec, on_line))
+            runner.add_done_callback(on_done)
+            try:
+                while (ev := await queue.get()) is not None:
+                    if ev.kind == "result":
+                        result_event = ev
+                    elif ev.kind == "auth_error":
+                        auth_hit = True
+                    yield ev
+            finally:
+                if not runner.done():
+                    runner.cancel()
+                    await asyncio.wait([runner])
         finally:
-            if not runner.done():
-                runner.cancel()
-                await asyncio.wait([runner])
+            if gateway is not None:
+                for line in await gateway.stop():
+                    self._tail.append(line)
+                    self._egress_log.append(line)
+        for line in self._egress_log:
+            if line.startswith("[egress] blocked"):
+                yield AgentEvent("log", f"[thinair] {line[9:]} (not on the allowlist)")
         res = runner.result()  # SandboxError propagates to the caller
 
         r = self._result

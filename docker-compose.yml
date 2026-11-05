@@ -10,6 +10,7 @@ services:
       CONTAINERS: 1
       IMAGES: 1
       VOLUMES: 1
+      NETWORKS: 1       # per-job egress networks for agent runs
       BUILD: 1
       POST: 1
       EXEC: 1

@@ -20,6 +20,7 @@ TASK = "{task}"
 _ID = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 _ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PLACEHOLDER = re.compile(r"\{[a-z_]+\}")
+_HOST = re.compile(r"^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 
 
 class AgentConfigError(ValueError):
@@ -84,6 +85,10 @@ class AgentConfig(_Strict):
     auth_error_patterns: list[str] = Field(default_factory=list)  # case-insensitive substrings
     limits: Limits = Limits()
     network: bool = True  # agents must reach their model provider
+    # Outbound allowlist: host names (or `*.domain`) this agent may reach over HTTPS through
+    # Thinair's per-run proxy. None = unrestricted (only for CLIs whose proxy support and
+    # endpoints are not verified). The CLI must honour HTTPS_PROXY.
+    egress: list[str] | None = None
 
     @field_validator("id")
     @classmethod
@@ -101,6 +106,18 @@ class AgentConfig(_Strict):
             if arg != TASK and _PLACEHOLDER.search(arg):
                 raise ValueError(f'unknown placeholder in {arg!r}; only "{{task}}" is supported')
         return v
+
+    @field_validator("egress")
+    @classmethod
+    def _egress(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        bad = [h for h in v if not _HOST.match(h)]
+        if bad:
+            raise ValueError(
+                f"invalid host names: {bad} (use e.g. api.example.com or *.example.com)"
+            )
+        return [h.lower() for h in v]
 
     @field_validator("env")
     @classmethod
