@@ -121,6 +121,8 @@ ROUTES = [
     ("GET", "/api/jobs/x/profile.md"),
     ("GET", "/api/agents"),
     ("GET", "/api/jobs/x/result"),
+    ("POST", "/api/jobs/x/pr"),
+    ("GET", "/api/jobs/x/patch"),
 ]
 
 

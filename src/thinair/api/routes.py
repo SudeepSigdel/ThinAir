@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session, select
 
@@ -18,6 +18,7 @@ from thinair.db.models import Job, JobKind, JobResult, JobStatus, ProfileReport,
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES
 from thinair.jobs.executors import agents_dir
+from thinair.jobs.pr import PRError
 from thinair.jobs.service import JobService
 from thinair.project.prepare import GitSource, PrepareError
 
@@ -52,6 +53,7 @@ class JobOut(BaseModel):
     task: str | None = None
     ref: str | None = None
     commit_sha: str | None = None
+    parent_job_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
@@ -204,6 +206,8 @@ def retry_job(job_id: str, svc: JobService = Depends(jobs_service)) -> JobOut:
         job, repo = _job_and_repo(s, job_id)
     if job.status not in TERMINAL_STATUSES:
         raise _err(status.HTTP_409_CONFLICT, "still_running", "Wait for the job to finish first.")
+    if job.kind == JobKind.PR:
+        return _submit_pr(svc, job.parent_job_id or "")
     return _submit(svc, repo.url, kind=job.kind, ref=job.ref, task=job.task, agent_id=job.agent_id)
 
 
@@ -274,7 +278,64 @@ def get_result(job_id: str) -> dict[str, Any]:
         "summary": r.summary,
         "diff": r.diff_text,
         "diff_stat": r.diff_stat,
+        "has_patch": r.patch is not None,
+        "pr_url": r.pr_url,
+        "pr_job": _latest_pr_job(job_id),
     }
+
+
+def _latest_pr_job(agent_job_id: str) -> dict[str, Any] | None:
+    with session_scope() as s:
+        job = s.exec(
+            select(Job)
+            .where(Job.parent_job_id == agent_job_id, Job.kind == JobKind.PR)
+            .order_by(Job.id.desc())  # type: ignore[attr-defined]
+        ).first()
+    if job is None:
+        return None
+    return {
+        "id": job.id,
+        "status": job.status,
+        "finished": job.status in TERMINAL_STATUSES,
+        "error_message": job.error_message,
+    }
+
+
+def _submit_pr(svc: JobService, agent_job_id: str) -> JobOut:
+    try:
+        job = svc.submit_pr(agent_job_id)
+    except PRError as e:
+        code = {
+            "job_not_found": status.HTTP_404_NOT_FOUND,
+            "pr_exists": status.HTTP_409_CONFLICT,
+            "pr_in_progress": status.HTTP_409_CONFLICT,
+        }.get(e.code, 422)
+        raise _err(code, e.code, e.message) from e
+    with session_scope() as s:
+        return JobOut.of(*_job_and_repo(s, job.id))
+
+
+@router.post("/jobs/{job_id}/pr", response_model=JobOut, status_code=201, tags=["agents"])
+def create_pr(job_id: str, svc: JobService = Depends(jobs_service)) -> JobOut:
+    """Open a pull request from a successful agent job's change. Queues a `pr` job; its result
+    (and this job's `/result`) then carries `pr_url`. Needs THINAIR_GITHUB_TOKEN with
+    Contents and Pull requests: Read and write."""
+    return _submit_pr(svc, job_id)
+
+
+@router.get("/jobs/{job_id}/patch", tags=["agents"])
+def get_patch(job_id: str) -> Response:
+    """The agent's exact change as a binary git patch (`git apply` it yourself)."""
+    with session_scope() as s:
+        _job_and_repo(s, job_id)
+        r = s.get(JobResult, job_id)
+    if r is None or not r.patch:
+        raise _err(status.HTTP_404_NOT_FOUND, "no_patch", "This job has no patch.")
+    return Response(
+        r.patch,
+        media_type="text/x-patch",
+        headers={"Content-Disposition": f'attachment; filename="thinair-{job_id}.patch"'},
+    )
 
 
 # ---- agents --------------------------------------------------------------------------------

@@ -163,6 +163,22 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - `thinair auth <id>` (interactive `docker run -it`, or `--print-command` for Compose hosts), `--check`; `thinair agents`.
 - Never log into a real account from tests or automation: logging in is the owner's job.
 
+## Pull requests (`src/thinair/jobs/pr.py`, phase 2 step 14)
+- Agent job end: `CLIAdapter._collect_patch` writes `git diff --cached --binary --full-index` to `.git/thinair.patch`
+  and reads it back with `SandboxManager.get_file` (Docker archive API; captured output is line-based and would
+  mangle CRLF/long lines). For clones the patch is against `commit_sha`, restricted (`:(literal)` pathspecs) to paths
+  changed vs the post-install baseline, so edits to install-created files still apply. Cap 5 MB -> `patch_too_large`.
+  Stored in `JobResult.patch`; workspace volume is still deleted.
+- `POST /api/jobs/{id}/pr` -> `JobService.submit_pr` (checks token, success, patch, no open/active PR) -> `pr` job
+  (`Job.parent_job_id`). Executor: fresh volume, `fetch --depth 1 origin <sha>` (token env), put patch, `apply --index`,
+  commit as `THINAIR_GIT_AUTHOR_NAME/EMAIL` (no trailers), `push --force HEAD:refs/heads/thinair/<agent-job-id>`,
+  then REST `POST /repos/{o}/{r}/pulls` from the server (`GitHubClient`, `requests`); 422 "already exists" reuses the
+  open PR. `pr_url` saved on both results. `GET /jobs/{id}/patch` downloads the patch. Retry of a pr job = new pr job.
+- UI: agent result shows Create PR / Download patch / PR link (only `https://github.com/` URLs become links).
+- Tests: `test_pr.py` (fake HTTP + fake executors), `test_pr_docker.py` (byte-exact round trip incl. CRLF/binary/
+  deletion/install-file edit; patch conflict; push with a fake token -> `push_failed`). Real GitHub push/PR is
+  untested (needs the owner's token). Browser smoke now 28 checks.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.
@@ -174,6 +190,5 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Status
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
-Phase 2: step 13 (private repos via clone-only token) done: 245 tests (206 fast + 39 Docker). Next: 14 PR creation
-(store full binary patch + base SHA; `pr` job re-clones, applies, pushes `thinair/<job-id>`, opens PR via REST),
-15 Telegram notifications (outbound only), 16 Codex/Gemini configs (verify flags first).
+Phase 2: step 13 (private repos) and 14 (pull requests) done: 268 tests (226 fast + 42 Docker), browser smoke 28/28.
+Next: 15 Telegram notifications (outbound only), 16 Codex/Gemini configs (verify flags first).

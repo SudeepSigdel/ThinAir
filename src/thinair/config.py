@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,12 +35,24 @@ class Settings(BaseSettings):
     # only to the clone container; never stored, logged or passed to install/test/agent runs.
     github_token: SecretStr | None = None
     github_token_file: Path | None = None  # alternative for Docker secrets
+    # Commit author for pull requests opened from agent jobs (use your GitHub noreply email
+    # to have commits linked to your account).
+    git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")
+    git_author_email: str = Field(default="thinair@localhost", pattern=r"^[^\s<>@]+@[^\s<>@]+$")
 
     @field_validator("github_token_file", mode="before")
     @classmethod
     def _blank_path_is_unset(cls, v: object) -> object:
         # `THINAIR_GITHUB_TOKEN_FILE=` (blank, as in .env.example) would otherwise become Path(".").
         return None if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("git_author_name", "git_author_email", mode="before")
+    @classmethod
+    def _blank_author_is_default(cls, v: object, info) -> object:
+        # A blank value in .env must not stop the server from starting.
+        if isinstance(v, str) and not v.strip():
+            return cls.model_fields[info.field_name].default
+        return v.strip() if isinstance(v, str) else v
 
     @property
     def db_url(self) -> str:

@@ -144,6 +144,46 @@ class JobService:
             )
             s.add(job)
             s.commit()
+        return self._enqueue(job)
+
+    def submit_pr(self, agent_job_id: str) -> Job:
+        """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
+        from thinair.db.models import JobResult
+        from thinair.jobs.pr import PRError, check_pr_possible, require_token
+
+        if JobKind.PR not in self._executors:
+            raise PRError("unsupported_job", "Opening pull requests is not available.")
+        require_token()  # fail fast on the phone instead of in the job log
+        with session_scope() as s:
+            parent = s.get(Job, agent_job_id)
+            result = s.get(JobResult, agent_job_id)
+            check_pr_possible(parent, result)
+            assert parent is not None and result is not None
+            if result.pr_url:
+                raise PRError("pr_exists", f"A pull request is already open: {result.pr_url}")
+            active = s.exec(
+                select(Job).where(
+                    Job.parent_job_id == agent_job_id,
+                    Job.kind == JobKind.PR,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),  # type: ignore[attr-defined]
+                )
+            ).first()
+            if active is not None:
+                raise PRError("pr_in_progress", "A pull request is already being opened.")
+            job = Job(
+                repo_id=parent.repo_id,
+                kind=JobKind.PR,
+                parent_job_id=parent.id,
+                agent_id=parent.agent_id,
+                task=parent.task,
+                ref=parent.ref,
+                commit_sha=parent.commit_sha,
+            )
+            s.add(job)
+            s.commit()
+        return self._enqueue(job)
+
+    def _enqueue(self, job: Job) -> Job:
         self.events.emit(job.id, EventType.STATUS, {"status": JobStatus.QUEUED.value})
         self._queue.put_nowait(job.id)
         return job

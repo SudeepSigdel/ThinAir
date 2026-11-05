@@ -94,3 +94,16 @@ def test_clone_spec_without_token_has_no_auth() -> None:
     spec = clone_spec("j1", "vol", GitSource("https://github.com/o/r"), None)
     assert not any(k.startswith("GIT_CONFIG") for k in spec.env)
     assert spec.redact == []
+
+
+def test_git_author_blank_means_default_and_bad_values_are_refused(env, monkeypatch) -> None:
+    from pydantic import ValidationError
+
+    from thinair.config import Settings
+
+    env(git_author_name="", git_author_email="  ")
+    s = get_settings()
+    assert (s.git_author_name, s.git_author_email) == ("Thinair", "thinair@localhost")
+    monkeypatch.setenv("THINAIR_GIT_AUTHOR_EMAIL", "not an email")
+    with pytest.raises(ValidationError):
+        Settings()

@@ -145,3 +145,6 @@ pre.diff .add { color: #4ade80; }
 pre.diff .del { color: #f87171; }
 pre.diff .hunk { color: #60a5fa; }
 pre.diff .meta { color: #e5e7eb; font-weight: 700; }
+
+.pr { margin-top: 1.5rem; }
+.pr .actions { align-items: center; }

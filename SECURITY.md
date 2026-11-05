@@ -23,7 +23,8 @@ at, their dependencies, and coding agents) inside Docker containers.
 - Test runs have no network. Install and agent runs do (they need package registries and the
   model provider).
 - Thinair reaches Docker through docker-socket-proxy, limited to the API sections it uses.
-- The optional GitHub token (`THINAIR_GITHUB_TOKEN`) is passed only to the clone container,
+- The optional GitHub token (`THINAIR_GITHUB_TOKEN`) is passed only to the clone container (and,
+  for pull requests, to a push container that runs no repo code, plus Thinair's own REST calls),
   through git's environment config scoped to `https://github.com/`. It is never in argv,
   `.git/config`, the workspace, the database or logs, and never reaches install, test or agent
   containers. Malformed values are refused so they can't inject extra HTTP headers.

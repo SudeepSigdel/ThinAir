@@ -124,8 +124,10 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
                     diff_stat={
                         **r.diff_stat,
                         "truncated": r.diff_truncated,
+                        "patch_too_large": r.patch_too_large,
                         "cost_usd": r.cost_usd,
                     },
+                    patch=r.patch,
                 )
             )
             row = s.get(Job, job.id)
@@ -142,4 +144,10 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
 
 
 def default_executors() -> dict[JobKind, Executor]:
-    return {JobKind.PROFILE: profile_executor, JobKind.AGENT: agent_executor}
+    from thinair.jobs.pr import pr_executor
+
+    return {
+        JobKind.PROFILE: profile_executor,
+        JobKind.AGENT: agent_executor,
+        JobKind.PR: pr_executor,
+    }

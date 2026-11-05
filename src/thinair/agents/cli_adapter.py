@@ -30,6 +30,10 @@ from thinair.sandbox.spec import SandboxSpec, VolumeMount
 LogFn = Callable[[str], None]
 NODE_IMAGE_FOR_RUNTIME = "node:22-slim"
 MAX_DIFF_BYTES = 1024**2
+# The exact patch kept for opening a pull request. Bigger changes can still be reviewed in the
+# (capped) diff, but not turned into a PR from the phone.
+MAX_PATCH_BYTES = 5 * 1024**2
+PATCH_PATH = ".git/thinair.patch"  # inside the workspace, outside the working tree
 # Dependency folders created by the install step are never part of the agent's change.
 DIFF_EXCLUDES = [":(exclude).venv", ":(exclude)node_modules"]
 _GIT_ID = ["-c", "user.name=Thinair", "-c", "user.email=thinair@localhost"]
@@ -52,6 +56,9 @@ class AgentResult:
     diff: str = ""
     diff_stat: dict[str, Any] = field(default_factory=dict)
     diff_truncated: bool = False
+    # Byte-exact `git diff --binary` against the clone, or None (no changes / too large).
+    patch: bytes | None = None
+    patch_too_large: bool = False
     cost_usd: float | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -272,6 +279,61 @@ class CLIAdapter:
                 ln for ln in lines if not ln.startswith("[thinair] output truncated")
             )
         r.diff_stat = parse_diff_stat(stat[-1] if stat else "")
+        if r.diff_stat.get("files"):
+            await self._collect_patch()
+
+    async def _collect_patch(self) -> None:
+        """Write the binary patch into the volume and read it back as bytes. Captured output is
+        line-based (CR stripped, long lines cut), so it can't carry an exact patch.
+
+        For a cloned repo the patch is made against the *cloned commit*, not the post-install
+        baseline, but only for the paths the agent changed. So it applies to a fresh clone even
+        when the agent edited a file the install step created (e.g. an untracked lockfile), and
+        untouched install output stays out of the pull request.
+        """
+        r = self._result
+        target = self._base or "HEAD"
+        pathspec: list[str] = []
+        if self._p.commit_sha:
+            code, names = await self._git(
+                ["diff", "--cached", "--name-only", "--no-renames", self._base or "HEAD"]
+            )
+            # Unusual names come back C-quoted ("..."); fall back to the baseline diff then.
+            if (
+                code == 0
+                and names
+                and len(names) <= 2000
+                and not any(n.startswith('"') for n in names)
+            ):
+                target = self._p.commit_sha
+                pathspec = ["--", *(f":(literal){n}" for n in names)]
+        code, _ = await self._git(
+            [
+                "diff",
+                "--cached",
+                "--binary",
+                "--full-index",
+                "--no-color",
+                "--no-ext-diff",
+                f"--output={PATCH_PATH}",
+                target,
+                *pathspec,
+            ]
+        )
+        if code != 0:
+            return
+        data = await asyncio.to_thread(
+            self._mgr.get_file,
+            self._p.volume,
+            f"/workspace/{PATCH_PATH}",
+            GIT_IMAGE,
+            self._job,
+            MAX_PATCH_BYTES,
+        )
+        if data is None:
+            r.patch_too_large = True
+        elif data:
+            r.patch = data
 
     def result(self) -> AgentResult:
         return self._result

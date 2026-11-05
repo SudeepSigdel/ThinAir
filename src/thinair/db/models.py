@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, LargeBinary
 from sqlmodel import Field, SQLModel
 
 
@@ -22,6 +22,7 @@ def utcnow() -> datetime:
 class JobKind(StrEnum):
     AGENT = "agent"
     PROFILE = "profile"
+    PR = "pr"  # open a pull request from a finished agent job's patch
 
 
 class JobStatus(StrEnum):
@@ -66,6 +67,8 @@ class Job(SQLModel, table=True):
     task: str | None = None
     ref: str | None = None
     commit_sha: str | None = None
+    # For `pr` jobs: the agent job whose patch is turned into a pull request.
+    parent_job_id: str | None = Field(default=None, foreign_key="job.id", index=True)
     limits: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     error_code: str | None = None
     error_message: str | None = None
@@ -114,6 +117,10 @@ class JobResult(SQLModel, table=True):
     summary: str | None = None
     diff_text: str | None = None  # size-capped by the runner
     diff_stat: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Exact `git diff --binary` against the job's commit_sha, for opening a pull request.
+    # None when there were no changes or the patch exceeded the size limit.
+    patch: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+    pr_url: str | None = None
 
 
 class ApiToken(SQLModel, table=True):

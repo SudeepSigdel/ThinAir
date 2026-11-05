@@ -190,6 +190,49 @@ class SandboxManager:
             with contextlib.suppress(DockerException):
                 c.remove(force=True, v=True)
 
+    def get_file(
+        self, volume: str, path: str, image: str, job_id: str, max_bytes: int
+    ) -> bytes | None:
+        """Read one regular file from a named volume (mounted at /workspace), byte for byte.
+
+        Like `put_tar`, a never-started helper container is used. Returns None if the file is
+        missing, is not a regular file, or is larger than `max_bytes`.
+        """
+        import io
+        import tarfile
+
+        if not path.startswith("/workspace/") or ".." in path.split("/"):
+            raise ValueError(f"invalid workspace path {path!r}")
+        c = self.client.containers.create(
+            image,
+            ["true"],
+            volumes={volume: {"bind": "/workspace", "mode": "ro"}},
+            labels={LABEL_MANAGED: "true", LABEL_JOB: job_id},
+            network_mode="none",
+        )
+        try:
+            try:
+                stream, stat = c.get_archive(path)
+            except docker.errors.NotFound:
+                return None
+            if int(stat.get("size", 0)) > max_bytes:
+                return None
+            buf = io.BytesIO()
+            for chunk in stream:
+                buf.write(chunk)
+                if buf.tell() > max_bytes + 64 * 1024:  # tar headers + padding
+                    return None
+            buf.seek(0)
+            with tarfile.open(fileobj=buf) as tar:
+                member = tar.next()
+                if member is None or not member.isfile():
+                    return None
+                f = tar.extractfile(member)
+                return f.read() if f else None
+        finally:
+            with contextlib.suppress(DockerException):
+                c.remove(force=True, v=True)
+
     async def run_capture(self, spec: SandboxSpec) -> tuple[SandboxResult, list[str]]:
         """Run to completion and return the output lines alongside the result."""
         lines: list[str] = []

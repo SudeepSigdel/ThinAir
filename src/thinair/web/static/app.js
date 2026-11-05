@@ -263,15 +263,19 @@ function renderJob(job) {
   $("job-title").textContent = job.repo_name;
   setStatus($("job-status"), job.status);
   const agent = job.kind === "agent";
+  const pr = job.kind === "pr";
   show("agent-box", agent);
-  show("runs-box", !agent);
+  show("runs-box", job.kind === "profile");
   $("job-task").textContent = job.task || "";
-  show("job-task", agent && !!job.task);
-  const bits = [agent ? `Agent: ${job.agent_id}` : "Resource profile"];
+  show("job-task", (agent || pr) && !!job.task);
+  const bits = [agent ? `Agent: ${job.agent_id}` : pr ? "Pull request" : "Resource profile"];
   if (job.ref) bits.push(`ref ${job.ref}`);
   if (job.commit_sha) bits.push(job.commit_sha.slice(0, 10));
   bits.push(`started ${ago(job.started_at || job.created_at)}`);
-  $("job-meta").textContent = bits.join(" · ");
+  $("job-meta").replaceChildren(bits.join(" · "));
+  if (pr && job.parent_job_id) {
+    $("job-meta").append(" · ", el("a", { href: `#/job/${job.parent_job_id}`, text: "agent task" }));
+  }
   showError("job-error-msg", job.error_message);
   show("cancel", !job.finished);
   show("retry", job.finished);
@@ -296,7 +300,9 @@ function follow(id) {
         renderJob(job);
         // Only ask for results that can exist (no needless 404s).
         if (job.kind === "agent") {
-          if (RESULT_CODES.has(job.error_code ?? null) && job.status !== "cancelled") await loadResult(id);
+          if (RESULT_CODES.has(job.error_code ?? null) && job.status !== "cancelled") await loadResult(id, job);
+        } else if (job.kind === "pr") {
+          if (job.status === "succeeded") await loadPrResult(id);
         } else if (job.status === "succeeded" || job.error_code === "baseline_failed") {
           await loadReport(id);
         }
@@ -333,7 +339,7 @@ function appendAgentMsg(msg) {
   $("agent-msgs").append(el("li", { class: kind, text: msg.text }));
 }
 
-async function loadResult(id) {
+async function loadResult(id, job) {
   let r;
   try {
     r = await api(`/api/jobs/${id}/result`);
@@ -364,7 +370,66 @@ async function loadResult(id) {
   } else {
     parts.push(el("p", { class: "muted", text: "The agent made no file changes." }));
   }
+  if (job && job.status === "succeeded" && r.has_patch) parts.push(prSection(id, r));
   $("agent-result").replaceChildren(...parts);
+  show("agent-result");
+}
+
+// Only GitHub links are rendered as links (never javascript: or other schemes from the server).
+function prLink(url) {
+  if (typeof url !== "string" || !url.startsWith("https://github.com/")) return null;
+  return el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "View pull request ↗" });
+}
+
+function prSection(id, r) {
+  const box = el("div", { class: "pr" }, el("h2", { text: "Pull request" }));
+  const link = prLink(r.pr_url);
+  const prJob = r.pr_job;
+  if (link) {
+    box.append(el("p", {}, link));
+    return box;
+  }
+  if (prJob && !prJob.finished) {
+    box.append(el("p", {}, "Opening a pull request… ", el("a", { href: `#/job/${prJob.id}`, text: "follow it" })));
+    return box;
+  }
+  if (prJob && prJob.status === "failed" && prJob.error_message) {
+    box.append(el("p", { class: "error", text: prJob.error_message }));
+  }
+  const button = el("button", { type: "button", text: prJob ? "Try again" : "Create pull request" });
+  const err = el("p", { class: "error", hidden: "" });
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    err.hidden = true;
+    try {
+      const job = await api(`/api/jobs/${id}/pr`, { method: "POST" });
+      location.hash = `#/job/${job.id}`;
+    } catch (e) {
+      if (!(e instanceof AuthError)) {
+        err.textContent = e.message;
+        err.hidden = false;
+      }
+      button.disabled = false;
+    }
+  });
+  box.append(
+    el("p", { class: "muted", text: "Pushes the change to a new branch and opens a pull request." }),
+    el("div", { class: "actions" }, button, el("a", { href: `/api/jobs/${id}/patch`, text: "Download patch" })),
+    err,
+  );
+  return box;
+}
+
+async function loadPrResult(id) {
+  let r;
+  try {
+    r = await api(`/api/jobs/${id}/result`);
+  } catch {
+    return;
+  }
+  const link = prLink(r.pr_url);
+  if (!link) return;
+  $("agent-result").replaceChildren(el("h2", { text: "Pull request opened" }), el("p", {}, link));
   show("agent-result");
 }
 

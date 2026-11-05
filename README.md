@@ -23,8 +23,8 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
-Private GitHub repositories work with a token (see below). Not yet built: opening pull
-requests, more agents (Codex, Gemini), notifications, multiple users. See [the roadmap](#roadmap).
+Private GitHub repositories and opening pull requests work with a GitHub token (see below).
+Not yet built: more agents (Codex, Gemini), notifications, multiple users. See [the roadmap](#roadmap).
 
 ## Quickstart (about 5 minutes)
 
@@ -75,7 +75,8 @@ type `/exit`. Check the result with `thinair auth claude --check`. As an alterna
 token on your own computer with `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.
 
 Then choose **Agent task** in the app, pick the agent, describe the task, and start it. You get
-the agent's messages live, its summary, and the full diff. Nothing is pushed anywhere.
+the agent's messages live, its summary, and the full diff. Nothing is pushed anywhere unless
+you tap **Create pull request** (see below).
 
 Adding another agent takes one YAML file, no code changes. See [docs/agents.md](docs/agents.md).
 
@@ -83,7 +84,7 @@ Adding another agent takes one YAML file, no code changes. See [docs/agents.md](
 
 Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
 choose **Only select repositories**, pick the repos, and give it **Contents: Read-only** (nothing
-else). Put it in `.env`, then restart (`docker compose up -d`):
+else; add write access only if you want pull requests, see below). Put it in `.env`, then restart (`docker compose up -d`):
 
 ```sh
 THINAIR_GITHUB_TOKEN=github_pat_...
@@ -97,6 +98,22 @@ the workspace, and it is masked in every log. Install, test and agent containers
 code in the repo and the agent can't read it. It is never stored in Thinair's database. Public
 repos keep working with the same token. When the token expires, clones fail with a message
 saying so: create a new one and restart.
+
+### Opening a pull request
+
+When an agent task succeeds with changes, its page offers **Create pull request** (and
+**Download patch**, to `git apply` it yourself). Thinair then:
+
+1. fetches the exact commit the agent worked on (in a clone container),
+2. applies the agent's change byte for byte and commits it,
+3. pushes the branch `thinair/<job-id>` (only Thinair writes to these branches), and
+4. opens the pull request against the branch you ran the task on (or the default branch).
+
+This needs the token to have **Contents: Read and write** and **Pull requests: Read and write**
+on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
+`THINAIR_GIT_AUTHOR_EMAIL` (use your GitHub noreply address to have them linked to your
+account). Pushing still never happens inside the agent's sandbox: the agent never sees the
+token. Changes larger than 5 MB can't be turned into a PR from Thinair.
 
 ## Configuring a project: `thinair.yaml`
 
@@ -160,8 +177,8 @@ The HTTP API is documented at `/docs` on your server (log in there with the same
   wrong tokens are rate-limited, and the phone app uses an HttpOnly, SameSite=Strict cookie.
   The web app has a strict Content-Security-Policy and renders all job output as text.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
-- **GitHub token (optional):** read only by the clone container, never by install, test or agent
-  runs, and never stored or logged. See [Private repositories](#private-repositories).
+- **GitHub token (optional):** used only by clone/push containers and Thinair's own GitHub API
+  calls, never by install, test or agent runs, and never stored or logged. See [Private repositories](#private-repositories).
 - **Agents and your login:** see the FAQ below. Only run agents on repositories you trust.
 
 Found a security problem? See [SECURITY.md](SECURITY.md).
@@ -208,8 +225,8 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 ## Roadmap
 
-- **Phase 2:** private repositories (done: read-only token used only for cloning), Codex CLI and
-  Gemini CLI configs, notifications (Telegram plugin), opening a pull request from an agent's diff.
+- **Phase 2:** private repositories and pull requests from an agent's change (done), Codex CLI
+  and Gemini CLI configs, notifications (Telegram).
 - **Phase 3:** outbound allowlist for agent runs, multiple users, Postgres, remote runners,
   Agent Client Protocol (ACP) adapter.
 
