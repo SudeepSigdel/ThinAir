@@ -32,8 +32,8 @@ You need a Linux machine (a 1–4 GB VM is enough, ARM or x86) or a desktop with
 [Docker](https://docs.docker.com/engine/install/) with the Compose plugin.
 
 ```sh
-git clone https://github.com/<you>/thinair.git
-cd thinair
+git clone https://github.com/SudeepSigdel/ThinAir.git
+cd ThinAir
 cp .env.example .env              # optional: every setting has a sensible default
 docker compose up -d --build      # first build takes a few minutes
 docker compose logs thinair | grep -A3 "admin token"

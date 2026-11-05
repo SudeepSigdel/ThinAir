@@ -8,7 +8,7 @@ larger, open an issue first so we can agree on the approach.
 You need Python 3.12+, [uv](https://docs.astral.sh/uv/) and, for the integration tests, Docker.
 
 ```sh
-git clone https://github.com/<you>/thinair.git && cd thinair
+git clone https://github.com/SudeepSigdel/ThinAir.git && cd ThinAir
 uv sync --extra dev
 uv run pytest -m "not docker"     # fast suite, no Docker needed (~20 s)
 uv run thinair serve              # http://localhost:8080 (token printed on first start)
