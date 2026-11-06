@@ -124,7 +124,7 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
             job.id,
             prepared,
             host_env=None if owner is None else {},
-            auth_volume=auth_volume_name(cfg.id, owner),
+            auth_volume=auth_volume_name(cfg.login_id, owner),
         )
         try:
             await adapter.prepare(ctx.log)

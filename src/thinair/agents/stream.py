@@ -5,6 +5,8 @@ Formats (`output:` in the agent YAML):
 - `codex-json`: Codex `exec --json` (JSONL `thread.*` / `turn.*` / `item.*` events).
 - `gemini-stream-json`: Gemini CLI `--output-format stream-json` (assistant text arrives in
   `delta` chunks, so this parser keeps state and joins them).
+- `acp`: Thinair's own ACP driver (`acp_driver.js`), which prints `{"acp": <kind>, ...}` lines
+  distilled from the Agent Client Protocol session (text chunks are joined per message here).
 - `text`: every line is a log line.
 
 Use `StreamParser(fmt)`: `feed(line)` per output line, then `finish()` once at the end.
@@ -127,13 +129,17 @@ class StreamParser:
     def __init__(self, fmt: str) -> None:
         self.fmt = fmt
         self._buf: list[str] = []  # gemini: assistant text not yet emitted
-        self._last_text = ""  # codex/gemini: the agent's latest message = the run's summary
+        self._last_text = ""  # codex/gemini/acp: the agent's latest message = the run's summary
+        self._msg_id: object = None  # acp: message the buffered chunks belong to
+        self._cost: float | None = None  # acp: from usage updates, if reported in USD
 
     def feed(self, line: str) -> list[AgentEvent]:
         if self.fmt == "codex-json":
             return self._codex(line)
         if self.fmt == "gemini-stream-json":
             return self._gemini(line)
+        if self.fmt == "acp":
+            return self._acp(line)
         return parse_line(line, self.fmt)
 
     def finish(self) -> list[AgentEvent]:
@@ -235,4 +241,61 @@ class StreamParser:
             events.append(AgentEvent("result", err_text if is_error else self._last_text, data))
         else:
             events.append(AgentEvent("log", _short(line, _MAX)))
+        return events
+
+    # ---- ACP, via Thinair's driver (src/thinair/agents/acp_driver.js) ----------------------
+    def _acp(self, line: str) -> list[AgentEvent]:
+        msg = _json(line)
+        kind = msg.get("acp") if msg else None
+        if not isinstance(kind, str):
+            return [*self._flush(), AgentEvent("log", _short(line, _MAX))]  # e.g. agent stderr
+        assert msg is not None
+        if kind == "text":
+            events: list[AgentEvent] = []
+            if msg.get("id") != self._msg_id:
+                events = self._flush()
+                self._msg_id = msg.get("id")
+            if isinstance(msg.get("text"), str):
+                self._buf.append(msg["text"])
+            return events
+        events = self._flush()
+        if kind == "started":
+            name = " ".join(str(x) for x in (msg.get("name"), msg.get("version")) if x)
+            events.append(
+                AgentEvent("log", f"[agent] ACP session started{f' ({name})' if name else ''}")
+            )
+        elif kind == "tool":
+            title = _short(msg.get("title") or "tool")
+            tkind = msg.get("kind")
+            label = f"{tkind}: {title}" if isinstance(tkind, str) and tkind != "other" else title
+            events.append(AgentEvent("tool", label))
+        elif kind == "tool_update" and msg.get("status") == "failed":
+            what = f": {_short(msg['title'])}" if msg.get("title") else ""
+            events.append(AgentEvent("log", f"[agent] tool failed{what}"))
+        elif kind == "permission" and not msg.get("allowed"):
+            events.append(
+                AgentEvent("log", f"[agent] declined (no allow option): {_short(msg.get('title'))}")
+            )
+        elif kind == "plan":
+            events.append(
+                AgentEvent("log", f"[agent] plan: {msg.get('done')}/{msg.get('total')} steps done")
+            )
+        elif kind == "usage":
+            cost = _dict(msg.get("cost"))
+            if cost.get("currency") == "USD" and isinstance(cost.get("amount"), (int, float)):
+                self._cost = float(cost["amount"])
+        elif kind == "auth_required":
+            events.append(AgentEvent("auth_error", f"[agent] {_short(msg.get('message'), 300)}"))
+        elif kind == "error":
+            text = str(msg.get("message") or "The agent reported a failure.")
+            events.append(AgentEvent("log", f"[agent] {_short(text, 300)}"))
+            events.append(AgentEvent("result", text, {"is_error": True}))
+        elif kind == "result":
+            reason = str(msg.get("stopReason") or "end_turn")
+            ok = reason == "end_turn"
+            text = self._last_text if ok else f"The agent stopped early ({reason})."
+            data: dict[str, Any] = {"is_error": not ok, "stop_reason": reason}
+            if self._cost is not None:
+                data["total_cost_usd"] = self._cost
+            events.append(AgentEvent("result", text, data))
         return events

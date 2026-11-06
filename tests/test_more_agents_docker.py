@@ -1,4 +1,4 @@
-"""The real Codex and Gemini CLIs inside Thinair's sandbox (needs Docker + npm registry; no
+"""The real Codex and Gemini CLIs (and the ACP agents) inside Thinair's sandbox (needs Docker + npm registry; no
 account is used). Copies of the built-in configs get `-test` ids, so the login volumes created
 and deleted here are never a real login."""
 
@@ -28,8 +28,13 @@ def mgr():
 
 
 def copy_cfg(agent_id: str):
+    """A `-test` copy with its OWN login volume. Dropping `shares_login_with` matters: the ACP
+    configs share e.g. `thinair-auth-claude`, which these tests delete."""
     cfg = load_agents()[0][agent_id]
-    return cfg.model_copy(update={"id": f"{agent_id}-test"})
+    auth = cfg.auth.model_copy(update={"shares_login_with": None})
+    copy = cfg.model_copy(update={"id": f"{agent_id}-test", "auth": auth})
+    assert copy.auth_volume == f"thinair-auth-{agent_id}-test"
+    return copy
 
 
 @pytest.fixture
@@ -91,3 +96,35 @@ async def test_real_gemini_logged_out_maps_to_the_login_hint(mgr, workspace) -> 
     assert r.error_code == "agent_not_authenticated", (r.error_code, r.logs_tail)
     assert "thinair auth gemini" in r.error_message
     assert r.exit_status == 41, r.logs_tail  # FatalAuthenticationError, not an argument error
+
+
+# ---- ACP (Agent Client Protocol) through Thinair's driver -----------------------------------
+@pytest.mark.parametrize("workspace", [("gemini-acp", "py_fastapi_app")], indirect=True)
+async def test_real_gemini_acp_logged_out_maps_to_the_login_hint(mgr, workspace) -> None:
+    cfg, job, prepared = workspace
+    adapter = CLIAdapter(cfg, mgr, job, prepared, host_env={})
+    await adapter.prepare(lambda _: None)
+    events = [ev async for ev in adapter.run("say hi")]
+    assert any("ACP session started (gemini-cli 0.67.0)" in e.text for e in events)
+    r = adapter.result()
+    assert r.error_code == "agent_not_authenticated", (r.error_code, r.logs_tail)
+    assert "thinair auth gemini" in r.error_message
+    assert r.exit_status == 3  # the driver's "auth_required" exit
+
+
+@pytest.mark.parametrize("workspace", [("claude-acp", "node_app")], indirect=True)
+async def test_real_claude_acp_fake_key_through_the_allowlist(mgr, workspace) -> None:
+    """A fake API key skips the login check; the adapter must reach only allowlisted hosts and
+    the rejected key must map to the login hint."""
+    cfg, job, prepared = workspace
+    fake = {"ANTHROPIC_API_KEY": "sk-ant-api03-" + "x" * 40}
+    adapter = CLIAdapter(cfg, mgr, job, prepared, host_env=fake)
+    await adapter.prepare(lambda _: None)
+    events = [ev async for ev in adapter.run("say hi")]
+    text = " ".join(e.text for e in events)
+    assert "outbound traffic limited to: api.anthropic.com" in text
+    assert "@agentclientprotocol/claude-agent-acp 0.95.0" in text
+    assert "not on the allowlist" not in text, text
+    r = adapter.result()
+    assert r.error_code == "agent_not_authenticated", (r.error_code, r.logs_tail)
+    assert fake["ANTHROPIC_API_KEY"] not in " ".join(r.logs_tail)  # masked

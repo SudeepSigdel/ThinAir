@@ -303,8 +303,8 @@ def auth(
         image = asyncio.run(
             ensure_agent_image(mgr, cfg, stack, lambda line: typer.echo(line, err=True))
         )
-        volume = auth_volume_name(cfg.id, owner)
-        mgr.ensure_persistent_volume(volume, {"thinair.auth": cfg.id})
+        volume = auth_volume_name(cfg.login_id, owner)
+        mgr.ensure_persistent_volume(volume, {"thinair.auth": cfg.login_id})
     except SandboxError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e

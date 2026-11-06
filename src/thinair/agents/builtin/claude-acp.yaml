@@ -1,0 +1,40 @@
+# Claude Code through the Agent Client Protocol, using the maintained ACP adapter
+# (@agentclientprotocol/claude-agent-acp, formerly @zed-industries/claude-agent-acp). Shares the
+# `claude` login: log in once with `thinair auth claude`. Verified 2026-11-06, see docs/agents.md.
+id: claude-acp
+name: Claude Code (ACP)
+version: "0.95.0"
+install: npm install -g @anthropic-ai/claude-code@2.1.311 @agentclientprotocol/claude-agent-acp@0.95.0
+needs_node: true
+protocol: acp
+command: [claude-agent-acp]
+env:
+  CLAUDE_CONFIG_DIR: /thinair-auth
+  DISABLE_AUTOUPDATER: "1"
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+auth:
+  config_dir: /thinair-auth
+  shares_login_with: claude
+  login_command: [claude]
+  check_command: [claude, auth, status]
+  env_passthrough: [CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY]
+  login_help: >-
+    In Claude Code, type /login, open the link it shows (any device works), sign in with your
+    own account, paste the code back, then type /exit.
+  hint: >-
+    Claude Code is not logged in for this Thinair server. Run `thinair auth claude` on the
+    server (or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+egress:
+  - api.anthropic.com
+  - claude.ai
+  - platform.claude.com
+auth_error_patterns:
+  - authentication_failed
+  - not logged in
+  - invalid api key
+  - please run /login
+limits:
+  cpus: 2
+  memory: 2g
+  pids: 1024
+  timeout_s: 1800

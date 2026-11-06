@@ -213,7 +213,9 @@ class CLIAdapter:
         self._image = await ensure_agent_image(self._mgr, self.cfg, stack, log)
         await ensure_image(self._mgr, "git", log)
         await asyncio.to_thread(
-            self._mgr.ensure_persistent_volume, self.auth_volume, {"thinair.auth": self.cfg.id}
+            self._mgr.ensure_persistent_volume,
+            self.auth_volume,
+            {"thinair.auth": self.cfg.login_id},
         )
         # Baseline commit after clone + install, so the diff shows only the agent's work (even
         # work it commits itself). Uploaded folders without git get a repository here.

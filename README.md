@@ -84,6 +84,10 @@ The same works for **Codex** (`thinair auth codex`: it shows a link and a one-ti
 `GEMINI_API_KEY`). Google notes that for unpaid-tier and Google One accounts Gemini CLI was
 replaced by Antigravity CLI; an API key still works.
 
+Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) work too:
+**Claude Code (ACP)** and **Gemini CLI (ACP)** are built in and reuse the `claude` / `gemini`
+logins. Any other ACP agent needs only a YAML file with `protocol: acp`.
+
 Adding another agent takes one YAML file, no code changes. See [docs/agents.md](docs/agents.md).
 
 ## Private repositories
@@ -303,7 +307,7 @@ runs. Memory limits are set on every service. Measured numbers are in
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
   notifications, Codex CLI and Gemini CLI configs (all done).
 - **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done),
-  multiple users (done), remote runners, Agent Client Protocol (ACP) adapter.
+  multiple users (done), Agent Client Protocol (ACP) adapter (done), remote runners.
 
 ## Contributing
 

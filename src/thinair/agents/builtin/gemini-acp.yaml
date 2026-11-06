@@ -1,0 +1,32 @@
+# Gemini CLI through the Agent Client Protocol (`gemini --acp`, in the pinned 0.67.0). Shares the
+# `gemini` login: log in once with `thinair auth gemini`. Verified 2026-11-06, see docs/agents.md.
+id: gemini-acp
+name: Gemini CLI (ACP)
+version: "0.67.0"
+install: npm install -g @google/gemini-cli@0.67.0
+needs_node: true
+protocol: acp
+command: [gemini, --acp]
+env:
+  GEMINI_CLI_HOME: /thinair-auth
+  NO_BROWSER: "true"
+auth:
+  config_dir: /thinair-auth
+  shares_login_with: gemini
+  login_command: [gemini]
+  check_command: null
+  env_passthrough: [GEMINI_API_KEY]
+  login_help: >-
+    In Gemini CLI choose "Sign in with Google", open the link it shows on any device, sign in with
+    your own account, paste the code back, then type /quit. Or set GEMINI_API_KEY instead.
+  hint: >-
+    Gemini CLI is not logged in for this Thinair server. Run `thinair auth gemini` on the server
+    (or set GEMINI_API_KEY).
+auth_error_patterns:
+  - please set an auth method
+  - api key not valid
+limits:
+  cpus: 2
+  memory: 2g
+  pids: 1024
+  timeout_s: 1800

@@ -137,6 +137,42 @@ Settings: `THINAIR_AGENT_EGRESS=open` turns the allowlist off for every agent.
 `THINAIR_AGENT_EGRESS_EXTRA_HOSTS=registry.npmjs.org,pypi.org,files.pythonhosted.org` adds hosts
 for every agent (needed if tasks install packages; each one is another place data could go).
 
+## ACP agents (Agent Client Protocol)
+
+[ACP](https://agentclientprotocol.com/protocol/overview) is a standard way for a client to drive a
+coding agent: newline-delimited JSON-RPC 2.0 over the agent's stdin/stdout, protocol version 1.
+With `protocol: acp` in an agent's YAML, `command` starts the agent as an ACP server (no
+`"{task}"`), and Thinair runs its own small client next to it **inside the sandbox**
+(`src/thinair/agents/acp_driver.js`, Node.js standard library only, so the config needs
+`needs_node: true`). The driver:
+
+- sends `initialize` (version 1, **no** `fs` or `terminal` capabilities: the agent edits
+  `/workspace` itself), `session/new` (`cwd` = the workspace, no MCP servers) and one
+  `session/prompt` with the task as a text block;
+- answers `session/request_permission` with the first `allow_once` (else `allow_always`)
+  option, like the CLI agents' bypass/yolo modes, because the container is the security
+  boundary; with no allow option it answers `cancelled`. Any other agent-to-client request gets
+  JSON-RPC "method not found";
+- turns `session/update` notifications into phone events (message chunks joined per message,
+  tool calls, failed tools, plan progress, USD cost) and ignores thoughts;
+- treats `stopReason: end_turn` as success; `refusal`, `max_tokens`, `max_turn_requests` and
+  `cancelled` as failure. `auth_required` (-32000) or an error mentioning authentication / an API
+  key maps to the login hint (driver exit code 3). An agent speaking another protocol version is
+  refused. On SIGTERM it sends `session/cancel`.
+
+`auth.shares_login_with: <agent id>` mounts that agent's login volume instead of a new one, so
+the built-in ACP variants use your existing logins (`thinair auth claude` / `thinair auth gemini`).
+
+| Built-in | Package / command | Verified (2026-11-06) |
+|---|---|---|
+| `claude-acp` | `@agentclientprotocol/claude-agent-acp@0.95.0` (the maintained adapter; `@zed-industries/claude-agent-acp` is deprecated) + Claude Code 2.1.311 for login and `claude auth status`; command `claude-agent-acp` | Logged out: `initialize` OK (agentInfo `@agentclientprotocol/claude-agent-acp 0.95.0`), `session/prompt` -> `-32000 Authentication required`. With a fake API key behind the allowlist it only tunnelled to `api.anthropic.com`, then reported the invalid key |
+| `gemini-acp` | Gemini CLI 0.67.0, `gemini --acp` (`--experimental-acp` is the deprecated spelling, per `gemini --help`) | Logged out: `initialize` OK (`gemini-cli 0.67.0`, protocol 1), `session/new` -> `-32000 Gemini API key is missing or not configured.`; with a fake key, `session/prompt` fails with "API key not valid" |
+
+Gemini in ACP mode does not need `--skip-trust`: it starts in an untrusted folder and then skips
+the project's own hooks and agent definitions, which is what we want for repositories we don't
+control. A copy of either config for another ACP agent (e.g. Codex via
+`@agentclientprotocol/codex-acp`) needs only `install`, `command` and the login settings.
+
 ## Adding an agent
 
 Drop `<id>.yaml` into `$THINAIR_DATA_DIR/agents/` (`/data/agents/` in Docker). A file whose id
@@ -150,6 +186,7 @@ install: npm install -g my-agent-cli@1.2.3   # run as root while building the ag
 needs_node: true            # copy Node.js 22 into Python project images
 needs_ca_certs: false       # true: copy Debian's CA bundle in (native binaries on node:22-slim)
 output: text                # or stream-json (Claude Code), codex-json, gemini-stream-json
+protocol: cli               # or acp (see above): then command starts the ACP server, no "{task}"
 command: [my-agent, run, --yes, "{task}"]    # argv, no shell; "{task}" is exactly one item
 env: {MY_AGENT_HOME: /thinair-auth}
 auth:
@@ -157,6 +194,7 @@ auth:
   login_command: [my-agent, login]           # run interactively by `thinair auth myagent`
   check_command: [my-agent, whoami]          # exit 0 = logged in (optional)
   env_passthrough: [MY_AGENT_TOKEN]          # optional host variables to forward (masked in logs)
+  shares_login_with: null                    # or another agent's id to reuse its login volume
   login_help: Follow the prompts, then exit.
   hint: My Agent is not logged in. Run `thinair auth myagent`.
 auth_error_patterns: [not logged in]         # output that means "bad login"

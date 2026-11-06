@@ -194,6 +194,21 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   One users (2026-06-18); API key or paid plan still works.
 - `test_more_agents_docker.py`: real CLIs, `-test` ids, no account, codex exec run with network off.
 
+## ACP (`src/thinair/agents/acp_driver.js`, phase 3 step 20)
+- `protocol: acp` agents: `argv(task)` = `node -e <ACP_DRIVER> -- <task> <command...>` (node stops option parsing
+  at `--`). The driver runs INSIDE the sandbox (no stdin plumbing through Docker needed), speaks ACP v1 to the
+  agent over stdio, prints `{"acp": kind, ...}` lines; `StreamParser("acp")` joins text per messageId. Exit codes:
+  0 end_turn, 1 other stopReason, 2 protocol/crash, 3 auth. No fs/terminal capabilities; permissions auto-allowed
+  (allow_once first), none -> cancelled; other agent requests -> -32601. Keep the driver stdlib-only.
+- Config rules (model validator): acp needs `needs_node`, no `{task}` anywhere, output forced to `acp`; `output:
+  acp` without `protocol: acp` is an error. `auth.shares_login_with` -> `cfg.login_id` -> volume
+  `thinair-auth-<login_id>` (per user: `auth_volume_name(cfg.login_id, user)`).
+- DANGER in tests: a `-test` copy of an ACP config must also clear `shares_login_with`, or its volume is the REAL
+  `thinair-auth-claude`/`-gemini`, which the fixtures delete (`copy_cfg` asserts this).
+- Built-ins `claude-acp` (@agentclientprotocol/claude-agent-acp 0.95.0 + claude-code for login/check) and
+  `gemini-acp` (`gemini --acp`). Tests: `test_acp.py` (host Node + `fixtures/fake_acp_agent.py`; skips without
+  Node), `test_acp_docker.py` (fake agent through CLIAdapter), real CLIs in `test_more_agents_docker.py`.
+
 ## Pull requests (`src/thinair/jobs/pr.py`, phase 2 step 14)
 - Agent job end: `CLIAdapter._collect_patch` writes `git diff --cached --binary --full-index` to `.git/thinair.patch`
   and reads it back with `SandboxManager.get_file` (Docker archive API; captured output is line-based and would
@@ -243,6 +258,6 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
 Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
-Phase 3: 17 egress allowlist (Claude Code on by default), 18 Postgres support and 19 multiple users done (design
-choices made without the owner, listed in README "Several users"; review them). Remote runners and ACP still need
-a design discussion with the owner first.
+Phase 3: 17 egress allowlist (Claude Code on by default), 18 Postgres support, 19 multiple users (design choices
+made without the owner, listed in README "Several users"; review them) and 20 ACP agents done. Remote runners
+still need a design discussion with the owner first (how runners authenticate/connect, what they may access).
