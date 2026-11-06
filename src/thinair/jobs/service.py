@@ -107,6 +107,7 @@ class JobService:
             task.cancel()
         await asyncio.gather(*self._workers, *self._running.values(), return_exceptions=True)
         self._workers.clear()
+        self.events.flush()
 
     def _recover(self) -> None:
         with session_scope() as s:

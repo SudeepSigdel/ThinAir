@@ -9,7 +9,6 @@ validated: a runner can only report events and a result for a job it currently h
 """
 
 import json
-import time
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -58,15 +57,15 @@ def require_runner(request: Request) -> RunnerIdentity:
     )
     if scheme.lower() != "bearer" or not token.strip():
         raise unauthorized
+    with session_scope() as s:
+        runner = verify_runner(s, token.strip())
+        if runner is not None:
+            return RunnerIdentity(id=runner.id, name=runner.name)
     key = api_auth._client_key(request)
     if api_auth._throttled(key):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
-    with session_scope() as s:
-        runner = verify_runner(s, token.strip())
-        if runner is None:
-            api_auth._failures[key].append(time.monotonic())
-            raise unauthorized
-        return RunnerIdentity(id=runner.id, name=runner.name)
+    api_auth.record_failure(key)
+    raise unauthorized
 
 
 async def _body(request: Request, model: type[BaseModel]) -> Any:

@@ -6,6 +6,7 @@ Two ways to authenticate, both carrying the same API token:
   cannot set headers, so the cookie is what lets live-log streaming work.
 """
 
+import ipaddress
 import time
 from collections import defaultdict, deque
 
@@ -20,21 +21,55 @@ from thinair.users import Principal, principal_for
 COOKIE_NAME = "thinair_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 
-# Failed-login throttle: 10 failures / 60 s per client address. In-memory (single process).
+# Failed-login throttle: 10 failures / 60 s per client address (IPv6: per /64, since one host
+# owns a whole /64). In-memory (single process), capped so many addresses can't grow it forever.
+#
+# While an address is throttled, a *long* valid token (>= 32 chars, e.g. every generated
+# `thinair_...` token: 256 bits, unguessable) is still accepted. Behind a reverse proxy everyone
+# shares one address, so otherwise a stranger sending wrong tokens could lock the owner out.
+# Shorter tokens (a hand-picked THINAIR_ADMIN_TOKEN of 20-31 chars) are refused unchecked while
+# throttled, which keeps online guessing slow where guessing could matter.
 _FAIL_LIMIT, _FAIL_WINDOW = 10, 60.0
+_MAX_KEYS = 10_000
+STRONG_TOKEN_LEN = 32
 _failures: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _client_key(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    host = request.client.host if request.client else "unknown"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 def _throttled(key: str) -> bool:
-    q = _failures[key]
+    q = _failures.get(key)
+    if not q:
+        return False
     cutoff = time.monotonic() - _FAIL_WINDOW
     while q and q[0] < cutoff:
         q.popleft()
+    if not q:
+        del _failures[key]
+        return False
     return len(q) >= _FAIL_LIMIT
+
+
+def record_failure(key: str) -> None:
+    if key not in _failures and len(_failures) >= _MAX_KEYS:
+        cutoff = time.monotonic() - _FAIL_WINDOW
+        for k in [k for k, q in _failures.items() if not q or q[-1] < cutoff]:
+            del _failures[k]
+        if len(_failures) >= _MAX_KEYS:  # still full: forget the oldest addresses
+            for k in list(_failures)[: _MAX_KEYS // 10]:
+                del _failures[k]
+    _failures[key].append(time.monotonic())
 
 
 def _extract_token(request: Request) -> str | None:
@@ -75,13 +110,20 @@ def require_auth(
         # toward nor is blocked by the throttle. Otherwise reloading a logged-out page could
         # lock the owner out.
         raise _unauthorized()
+    return _check(request, token)
+
+
+def _check(request: Request, token: str) -> Principal:
     key = _client_key(request)
-    if _throttled(key):
+    throttled = _throttled(key)
+    if throttled and len(token) < STRONG_TOKEN_LEN:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
     who = _principal(token)
     if who is not None:
         return who
-    _failures[key].append(time.monotonic())
+    if throttled:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
+    record_failure(key)
     raise _unauthorized()
 
 
@@ -103,12 +145,7 @@ class LoginBody(BaseModel):
 
 @router.post("/login", status_code=status.HTTP_204_NO_CONTENT)
 def login(body: LoginBody, request: Request, response: Response) -> None:
-    key = _client_key(request)
-    if _throttled(key):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
-    if _principal(body.token) is None:
-        _failures[key].append(time.monotonic())
-        raise _unauthorized()
+    _check(request, body.token)
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     response.set_cookie(
         COOKIE_NAME,

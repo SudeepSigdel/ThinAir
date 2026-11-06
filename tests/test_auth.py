@@ -6,9 +6,11 @@ from typer.testing import CliRunner
 from thinair import auth
 from thinair.api import auth as api_auth
 from thinair.api.app import create_app
+from thinair.auth import create_token
 from thinair.cli.main import app as cli_app
 from thinair.config import get_settings
 from thinair.db.models import ApiToken
+from thinair.db.session import session_scope
 
 
 @pytest.fixture(autouse=True)
@@ -103,10 +105,35 @@ def test_failed_attempts_are_throttled(client) -> None:
     for _ in range(10):
         assert client.get("/api/me", headers=wrong).status_code == 401
     assert client.get("/api/me", headers=wrong).status_code == 429
-    # even a correct token is refused while throttled (limits online guessing)
-    assert client.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 429
+    # A short correct token is refused unchecked while throttled (limits online guessing)...
+    short = "s" * 20
+    with session_scope() as s:
+        create_token(s, "short", short)
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {short}"}).status_code == 429
+    assert client.post("/api/login", json={"token": short}).status_code == 429
+    # ...but a long one (every generated token) still works: behind a reverse proxy everyone
+    # shares one address, and strangers must not be able to lock the owner out.
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+    assert client.post("/api/login", json={"token": TOKEN}).status_code == 204
     # wrong logins count too
     assert client.post("/api/login", json={"token": "x"}).status_code == 429
+
+
+def test_throttle_keys_and_memory_are_bounded() -> None:
+    from types import SimpleNamespace
+
+    def key(host: str) -> str:
+        return api_auth._client_key(SimpleNamespace(client=SimpleNamespace(host=host)))
+
+    assert key("203.0.113.9") == "203.0.113.9"
+    assert key("::ffff:203.0.113.9") == "203.0.113.9"
+    assert key("2001:db8:1:2:aaaa::1") == key("2001:db8:1:2:bbbb::2") == "2001:db8:1:2::/64"
+    assert key("testclient") == "testclient"
+    api_auth._failures.clear()
+    for i in range(api_auth._MAX_KEYS + 500):
+        api_auth.record_failure(f"k{i}")
+    assert len(api_auth._failures) <= api_auth._MAX_KEYS
+    api_auth._failures.clear()
 
 
 def test_requests_without_a_token_never_lock_anyone_out(client) -> None:

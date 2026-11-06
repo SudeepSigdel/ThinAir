@@ -14,6 +14,9 @@ from thinair.config import get_settings
 def _sqlite_pragmas(dbapi_conn, _record) -> None:  # noqa: ANN001
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
+    # Safe with WAL (the database can't be corrupted; a power cut may lose the last commits) and
+    # avoids an fsync on every commit, which is slow on small VMs' network disks.
+    cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA busy_timeout=5000")
     cur.close()

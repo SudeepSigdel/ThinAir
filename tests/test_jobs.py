@@ -390,3 +390,36 @@ async def test_concurrent_jobs_have_independent_sequences() -> None:
         assert utcnow() is not None
     finally:
         await svc.stop()
+
+
+# ---- event buffering ----------------------------------------------------------------------
+async def test_log_lines_are_batched_and_other_events_flush_them_in_order() -> None:
+    with session_scope() as s:
+        repo = Repo(url=URL, name="demo")
+        s.add(repo)
+        s.commit()
+        job = Job(repo_id=repo.id, kind=JobKind.PROFILE)
+        s.add(job)
+        s.commit()
+    store = EventStore(flush_s=0.05, flush_lines=5)
+    store.emit(job.id, EventType.LOG, {"line": "a"})
+    store.emit(job.id, EventType.LOG, {"line": "b"})
+    assert events_of(job.id) == []  # buffered, not yet one commit per line
+    await asyncio.sleep(0.15)
+    assert [e.data["line"] for e in events_of(job.id)] == ["a", "b"]  # the timer flushed
+
+    store.emit(job.id, EventType.LOG, {"line": "c"})
+    store.emit(job.id, EventType.STATUS, {"status": "running"})  # flushes "c" first
+    assert [(e.seq, e.type) for e in events_of(job.id)][-2:] == [
+        (3, EventType.LOG),
+        (4, EventType.STATUS),
+    ]
+    for i in range(5):  # a full batch is written without waiting for the timer
+        store.emit(job.id, EventType.LOG, {"line": f"x{i}"})
+    assert len(events_of(job.id)) == 9
+
+    capped = EventStore(max_events_per_job=10, flush_s=10)
+    for i in range(5):
+        capped.emit(job.id, EventType.LOG, {"line": f"y{i}"})
+    lines = [e.data.get("line", "") for e in events_of(job.id)]
+    assert lines[-1].startswith("[thinair] log limit reached") and len(lines) == 11

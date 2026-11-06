@@ -54,7 +54,11 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (in Docker: `docker compose exec thinair thinair token create --name phone`).
 - API accepts `Authorization: Bearer` or the HttpOnly/SameSite=Strict `thinair_session` cookie (needed for SSE).
   Protect routes with `Depends(require_auth)`. `/healthz` is the only open route. Wrong tokens are throttled
-  (10/min/IP); requests with *no* token are a plain 401 and never count (else reloading the logged-out UI locks you out).
+  (10/min per IP, IPv6 per /64, table capped at 10k keys); requests with *no* token are a plain 401 and never count
+  (else reloading the logged-out UI locks you out). While throttled, tokens >= 32 chars (all generated ones) are
+  still checked and accepted: behind Caddy everyone shares one IP, so strangers could otherwise lock the owner out.
+  Shorter tokens get 429 unchecked. Test gotcha: TestClient's host is "testclient" (not an IP), so IP parsing
+  bugs only show up against a live server (that is how an IPv4 crash was caught).
 - `session_scope()` uses `expire_on_commit=False` so rows stay readable after the session closes.
 
 ## Users (`src/thinair/users.py`, phase 3 step 19)
@@ -136,6 +140,12 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   Errors become `error_code` + a user-safe `error_message`; unexpected exceptions are logged server-side only.
 - Executors are plugged in (`dict[JobKind, Executor]`) so the machinery is tested with fakes; `executors.py` holds the
   real profile and agent executors (persist ProfileRun/ProfileReport and JobResult).
+- `events.EventStore`: LOG events emitted inside the event loop are buffered and written in one transaction every
+  0.2 s / 200 lines (was one commit + fsync per line, blocking the loop: 1.1 ms -> 0.07 ms per line); any other event
+  type flushes the buffer first, so order holds and statuses are stored before `emit` returns. `flush()` on stop.
+  Streams wait per job (`_waiters[job_id]`), so a busy job no longer wakes every open stream. Index
+  `(job_id, seq)` (migration 0005) serves every read; the old job_id-only index sorted up to 50k rows per fetch.
+  SQLite runs `synchronous=NORMAL` (safe with WAL).
 - `events.EventStore`: per-job `seq` (= SSE `id:`), stored in SQLite, `stream(job_id, after)` replays then follows live,
   keep-alive every 15 s, ends when the job is finished. Order matters: emit the final STATUS event *before* writing the
   terminal job status; streams read "finished" *before* fetching. Log events are capped per job; lifecycle events never are.
@@ -271,6 +281,7 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.
 - Compose pins `THINAIR_HOST=0.0.0.0` / `THINAIR_PORT=8080` inside the container; `.env`'s THINAIR_PORT/BIND only
   choose the published host port. Verified end to end through the socket proxy (image build, clone, real profile).
+- The socket proxy grants only what Thinair calls (containers, images, volumes, networks, build, info): no EXEC.
 - Measured idle: ~82 MiB total (docs/footprint.md). Never start a Compose instance while Docker tests run: its
   startup sweep removes the tests' sandbox containers.
 

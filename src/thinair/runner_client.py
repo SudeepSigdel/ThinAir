@@ -138,6 +138,9 @@ class RunnerClient:
                 raise
             except (requests.RequestException, ValueError) as e:
                 why = type(e).__name__
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if status_code:
+                    why = f"HTTP {status_code}"
                 log.warning("server not reachable (%s); retrying in %.0f s", why, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, Column, LargeBinary
+from sqlalchemy import JSON, Column, Index, LargeBinary
 from sqlmodel import Field, SQLModel
 
 
@@ -108,8 +108,11 @@ class Job(SQLModel, table=True):
 class JobEvent(SQLModel, table=True):
     """Append-only event log; `seq` is per job and doubles as the SSE `Last-Event-ID`."""
 
+    # Every read is "this job, after seq N, in seq order": served straight from this index.
+    __table_args__ = (Index("ix_jobevent_job_id_seq", "job_id", "seq"),)
+
     id: int | None = Field(default=None, primary_key=True)
-    job_id: str = Field(foreign_key="job.id", index=True)
+    job_id: str = Field(foreign_key="job.id")  # indexed by ix_jobevent_job_id_seq
     seq: int
     ts: datetime = Field(default_factory=utcnow)
     type: EventType

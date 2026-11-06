@@ -322,17 +322,28 @@ def get_result(job_id: str, who: Principal = Depends(require_auth)) -> dict[str,
     """What an agent job produced: summary, diff and diff statistics."""
     with session_scope() as s:
         _job_and_repo(s, job_id, who)
-        r = s.get(JobResult, job_id)
+        # Named columns only: the patch (up to 5 MB) is not loaded just to say whether it exists.
+        r = s.exec(
+            select(
+                JobResult.job_id,
+                JobResult.exit_status,
+                JobResult.summary,
+                JobResult.diff_text,
+                JobResult.diff_stat,
+                JobResult.patch.is_not(None),  # type: ignore[union-attr]
+                JobResult.pr_url,
+            ).where(JobResult.job_id == job_id)
+        ).first()
     if r is None:
         raise _err(status.HTTP_404_NOT_FOUND, "no_result", "This job has no agent result (yet).")
     return {
-        "job_id": r.job_id,
-        "exit_status": r.exit_status,
-        "summary": r.summary,
-        "diff": r.diff_text,
-        "diff_stat": r.diff_stat,
-        "has_patch": r.patch is not None,
-        "pr_url": r.pr_url,
+        "job_id": r[0],
+        "exit_status": r[1],
+        "summary": r[2],
+        "diff": r[3],
+        "diff_stat": r[4],
+        "has_patch": bool(r[5]),
+        "pr_url": r[6],
         "pr_job": _latest_pr_job(job_id),
     }
 

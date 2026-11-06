@@ -13,8 +13,8 @@ services:
       NETWORKS: 1       # per-job egress networks for agent runs
       BUILD: 1
       POST: 1
-      EXEC: 1
       INFO: 1
+      # EXEC stays denied: Thinair never execs into containers.
       # Everything else (SWARM, SECRETS, SERVICES, PLUGINS, ...) stays denied.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
