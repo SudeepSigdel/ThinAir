@@ -237,7 +237,7 @@ def test_builtin_codex_and_gemini_configs() -> None:
 
 def test_ca_bundle_is_copied_only_when_asked() -> None:
     agents = load_agents()[0]
-    codex_df = agent_dockerfile(agents["codex"], "thinair-sandbox-node:1", "node")
+    codex_df = agent_dockerfile(agents["codex"], "thinair-sandbox-node:2", "node")
     assert "COPY --from=python:3.12-slim /etc/ssl/certs/ca-certificates.crt" in codex_df
     assert "SSL_CERT_FILE" in codex_df and "apt" not in codex_df
     assert "ca-certificates" not in agent_dockerfile(agents["claude"], "img", "node")

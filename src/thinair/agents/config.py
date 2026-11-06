@@ -82,11 +82,44 @@ class Limits(_Strict):
         return parse_size(v)
 
 
+# Where a downloaded agent (`download:`) is unpacked inside the agent image.
+DOWNLOAD_DIR = "/opt/thinair-agent"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class Download(_Strict):
+    """One archive (or bare binary) for one CPU architecture, fetched while building the image."""
+
+    url: str = Field(pattern=r"^https://[^\s'\"]+$")
+    sha256: str | None = None  # checked when given (the ACP registry has it for most agents)
+    # For agents whose program has a different name per architecture: this path (relative to
+    # the archive) is linked as /opt/thinair-agent/thinair-agent-cmd, which `command` then uses.
+    cmd: str | None = Field(None, pattern=r"^[A-Za-z0-9_.+/-]+$")
+
+    @field_validator("cmd")
+    @classmethod
+    def _cmd(cls, v: str | None) -> str | None:
+        if v is not None and (v.startswith("/") or ".." in v.split("/")):
+            raise ValueError("cmd: must be a path inside the archive")
+        return v
+
+    @field_validator("sha256")
+    @classmethod
+    def _sha(cls, v: str | None) -> str | None:
+        if v is not None and not _SHA256.match(v.lower()):
+            raise ValueError("sha256: must be 64 hex characters")
+        return v.lower() if v else v
+
+
 class AgentConfig(_Strict):
     id: str
     name: str
     version: str | None = None  # informational; pin the real version in `install`
-    install: str  # shell command run as root while building the agent image
+    # Shell command run as root while building the agent image (e.g. a pinned `npm install -g`).
+    install: str | None = None
+    # Or a release archive per architecture, unpacked into /opt/thinair-agent (checksum-verified,
+    # in a separate build stage, so no download tool is needed in the agent image).
+    download: dict[Literal["linux-x86_64", "linux-aarch64"], Download] | None = None
     needs_node: bool = False  # copy a Node.js runtime into non-Node project images
     # Copy Debian's CA bundle into the image (node:22-slim has none; native binaries need it).
     needs_ca_certs: bool = False
@@ -115,6 +148,8 @@ class AgentConfig(_Strict):
 
     @model_validator(mode="after")
     def _protocol(self) -> "AgentConfig":
+        if not self.install and not self.download:
+            raise ValueError("install: or download: is needed to put the agent in its image")
         v = self.command
         if self.protocol == "acp":
             if any(TASK in a for a in v):  # nothing is substituted in ACP commands

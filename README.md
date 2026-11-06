@@ -12,7 +12,8 @@ Thinair never talks to an AI model itself. It drives the official agent CLIs as 
 
 ## The 30-second demo
 
-On your phone, open Thinair and paste `https://github.com/you/your-api`. Tap **Start profile**.
+On your phone, open Thinair, add `https://github.com/you/your-api` as a project, choose
+**Resource profile** and tap **Start profile**.
 The log streams in while Thinair clones the repo, installs its dependencies once, and re-runs the
 tests at 2, 1, 0.5 and 0.25 CPUs with less and less memory. A run that gets killed for lack of
 memory shows up as 💥. About a dozen runs later you get a card: *Minimum that passes: 0.25 CPU /
@@ -30,7 +31,9 @@ Gemini CLI. Several people can share one server, each with their own jobs and ag
 ## Quickstart (about 2 minutes)
 
 You need a Linux machine (a 1–4 GB VM is enough, ARM or x86) or a desktop with
-[Docker](https://docs.docker.com/engine/install/) and its Compose plugin. Then run:
+[Docker](https://docs.docker.com/engine/install/) and its Compose plugin. On a fresh Linux
+machine the installer offers to install Docker for you. Using Oracle Cloud's free Arm machines?
+See [docs/oracle.md](docs/oracle.md). Then run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh
@@ -40,8 +43,9 @@ The installer puts everything in `~/thinair`, creates your login token, starts T
 ready-made images (nothing is built on your machine), prepares the sandbox images so the first job
 starts right away, and runs `thinair doctor` to check the setup. On the first install it asks how
 you'll open Thinair from your phone (Tailscale, your own domain, or later) and sets up HTTPS for
-it. At the end it prints the address and the token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
-later to upgrade; your settings are kept. You can read the script first:
+it (it can install Tailscale for you too). At the end it prints the address and the token. Open
+<http://localhost:8080> and paste the token to log in. Run the same command again later to
+upgrade; your settings are kept (`thinair doctor` says when a new version is out). You can read the script first:
 `curl -fsSL .../install.sh -o install.sh && less install.sh && sh install.sh`.
 
 Lost the token? It is `THINAIR_ADMIN_TOKEN` in `~/thinair/.env`, or create another with
@@ -94,6 +98,24 @@ Then use "Add to Home Screen". It runs like an app. Jobs keep
 running on the server when you close it, and the live log picks up where it left off when you
 come back.
 
+## Projects
+
+The home screen lists your **projects** (GitHub repositories), most recently used first, with
+each one's latest job and how many are still running. Add one by pasting its URL. A project's
+page is where you start jobs on it and see its history; every job page links back to its
+project, so moving between repositories is two taps.
+
+Each job still works on its own fresh copy of the repository, so jobs never see each other's
+changes and several projects can run at the same time. What carries over:
+
+- **Defaults.** Admins can set a project's default agent and branch (**Project defaults** on its
+  page, or `PATCH /api/repos/{id}`). New jobs that don't pick one use them.
+- **Dependency cache.** Package downloads (pip, uv, npm, yarn) are kept per project and user, so
+  the next job on that project installs without downloading again. Only the install step sees
+  the cache; each user has their own, so nobody's jobs read files another user's jobs wrote.
+  `thinair cache list` shows them, `thinair cache clear` frees the space, and
+  `THINAIR_DEPENDENCY_CACHE=false` turns it off. Remote runners don't use it.
+
 ## Running a coding agent
 
 Each agent logs in **once, with your account**, into its own Docker volume on your server:
@@ -108,7 +130,7 @@ In Claude Code, type `/login`, open the link on any device, sign in, paste the c
 type `/exit`. Check the result with `thinair auth claude --check`. As an alternative, generate a
 token on your own computer with `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN` in `.env`.
 
-Then choose **Agent task** in the app, pick the agent, describe the task, and start it. You get
+Then open a project in the app, describe the task, pick the agent, and start it. You get
 the agent's messages live, its summary, and the full diff. Nothing is pushed anywhere unless
 you tap **Create pull request** (see below).
 
@@ -119,7 +141,41 @@ replaced by Antigravity CLI; an API key still works.
 
 Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) work too:
 **Claude Code (ACP)** and **Gemini CLI (ACP)** are built in and reuse the `claude` / `gemini`
-logins. Any other ACP agent needs only a YAML file with `protocol: acp`.
+logins.
+
+### Conversations: reply and approve from your phone
+
+With an ACP agent (for example **Claude Code (ACP)**), tick **Keep the conversation open** when
+you start a task. When the agent finishes a step it waits for you: reply with more instructions,
+tap **Stop this step** to interrupt it, or **Finish** to collect the result and diff as usual.
+Tick **Ask me before it acts** as well and every command or file edit the agent wants to make
+shows up as a card with the agent's own choices (allow once, always allow, reject). Nothing
+happens until you answer; an unanswered request is refused after `THINAIR_AGENT_IDLE_S`
+(10 minutes), and so is the whole conversation if you don't reply. While it waits the sandbox
+keeps running and holds one job slot (`THINAIR_MAX_CONCURRENT_JOBS`). Only the person who
+started the job can answer it. Agents that run one task at a time (the plain `claude`, `codex`,
+`gemini` configs) keep working as before.
+
+### More agents, from the ACP registry
+
+The official [ACP registry](https://github.com/agentclientprotocol/registry) lists about 45
+coding agents (GitHub Copilot, Cursor, OpenCode, Goose, Kiro, Qwen Code, Cline, Amp, Codex
+through ACP, and more), each pinned to a version. Thinair can add any of them that runs on
+Linux (43 of 45 today):
+
+```sh
+thinair agent search              # what's there, and whether Thinair can install it
+thinair agent add opencode        # writes data/agents/opencode.yaml (pinned version)
+thinair auth opencode             # log in with the agent's own login, in its own volume
+thinair agent remove opencode
+```
+
+(With Compose: `docker compose exec thinair thinair agent add opencode`.) npm agents are
+installed with `npm install -g <package@version>`; others are downloaded from the vendor's
+release, checked against the registry's sha256 when it has one, and unpacked in a separate build
+stage. Each agent keeps its login in `thinair-auth-<id>` (per user), like the built-in ones. The
+registry doesn't describe how each agent logs in, so `thinair auth <id>` starts the agent's own
+CLI; see [docs/agents.md](docs/agents.md) for which ones were checked and what to expect.
 
 Adding another agent takes one YAML file, no code changes. See [docs/agents.md](docs/agents.md).
 
@@ -268,6 +324,7 @@ thinair serve                    run the server (what the container runs)
 thinair profile <dir|url>        profile locally without the server; --md/--json to save the report
 thinair auth <agent> [--check]   log an agent in (interactive), or check its login
 thinair agents                   list agent configs (and report broken ones)
+thinair agent search|add|remove  agents from the ACP registry (about 45)
 thinair token create|list|revoke manage API tokens (--user NAME for someone else's)
 thinair user add|list|disable    manage users (see "Several users")
 thinair runner add|list|disable  manage remote runners (on the server)
@@ -276,6 +333,7 @@ thinair doctor                   check the install and print how to fix problems
 thinair qr [--user NAME]         QR code that signs a phone in (one-time, 10 minutes)
 thinair user limit NAME N        max unfinished jobs for a member (0 = none, or `default`)
 thinair images                   prepare the sandbox images now (else the first job does it)
+thinair cache list|clear         per-project dependency caches (package downloads)
 ```
 
 The HTTP API is documented at `/docs` on your server (log in there with the same token).

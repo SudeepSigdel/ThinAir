@@ -58,7 +58,49 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
     guard("github", lambda: _github(online))
     guard("notifications", _telegram)
     guard("runners", _runners)
+    guard("version", lambda: _version(online))
     return out
+
+
+RELEASES_URL = "https://api.github.com/repos/SudeepSigdel/ThinAir/releases/latest"
+
+
+def _parse_version(v: str) -> tuple[int, ...] | None:
+    parts = v.strip().removeprefix("v").split(".")
+    try:
+        return tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return None  # e.g. a dev build
+
+
+def _version(online: bool) -> Check:
+    """Is a newer release out? (Read-only: one anonymous GitHub API call.)"""
+    from thinair import __version__
+
+    if not online:
+        return Check("ok", "Version", f"{__version__} (not checked online)")
+    import requests
+
+    try:
+        r = requests.get(
+            RELEASES_URL, headers={"Accept": "application/vnd.github+json"}, timeout=10
+        )
+        latest = r.json().get("tag_name", "") if r.ok else ""
+    except (requests.RequestException, ValueError) as e:
+        return Check(
+            "ok", "Version", f"{__version__} (couldn't check for updates: {type(e).__name__})"
+        )
+    mine, theirs = _parse_version(__version__), _parse_version(latest)
+    if mine is None or theirs is None:
+        return Check("ok", "Version", f"{__version__} (latest release: {latest or 'unknown'})")
+    if theirs > mine:
+        return Check(
+            "warn",
+            "Version",
+            f"{__version__}; {latest} is available",
+            "Update: run the installer again (it keeps your settings and data).",
+        )
+    return Check("ok", "Version", f"{__version__} (up to date)")
 
 
 # ---- individual checks -------------------------------------------------------------------------

@@ -9,6 +9,7 @@ command run inside sandboxes.
 """
 
 import asyncio
+import hashlib
 import io
 import re
 import tarfile
@@ -77,6 +78,27 @@ def workspace_volume(job_id: str) -> str:
     return f"thinair-ws-{job_id}"
 
 
+# ---- dependency cache ----------------------------------------------------------------------
+# Package managers' download caches, kept per (repo, user) in a volume that outlives jobs, so a
+# repeat job on the same project reinstalls from local files instead of the network. Mounted
+# ONLY during the install step (never for tests or agents). Per user, because install commands
+# come from the repo and can write anything into the cache: nobody's jobs read a cache another
+# user's jobs wrote. `thinair cache clear` removes them.
+CACHE_LABEL = "thinair.cache"
+CACHE_ENV = {
+    "PIP_CACHE_DIR": "/cache/pip",
+    "UV_CACHE_DIR": "/cache/uv",
+    "npm_config_cache": "/cache/npm",
+    "YARN_CACHE_FOLDER": "/cache/yarn",
+}
+
+
+def cache_volume(repo_url: str, scope: str) -> str:
+    """Name of the dependency cache for `repo_url` as used by `scope` (a user name)."""
+    digest = hashlib.sha256(f"{scope} {repo_url}".encode()).hexdigest()[:20]
+    return f"thinair-cache-{digest}"
+
+
 def dir_to_tar(path: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
     """Pack a local directory for upload. Files are owned by the sandbox user; symlinks and
     junk directories (node_modules, .venv, ...) are skipped."""
@@ -114,8 +136,8 @@ async def ensure_image(mgr: SandboxManager, stack: str, log: LogFn) -> str:
 def _spec(
     job_id: str, volume: str, image: str, command: list[str], ro: bool = False, **kw
 ) -> SandboxSpec:
-    mount = VolumeMount(volume=volume, path="/workspace", read_only=ro)
-    return SandboxSpec(image=image, command=command, job_id=job_id, mounts=[mount], **kw)
+    kw.setdefault("mounts", [VolumeMount(volume=volume, path="/workspace", read_only=ro)])
+    return SandboxSpec(image=image, command=command, job_id=job_id, **kw)
 
 
 async def _read_only(
@@ -154,10 +176,12 @@ async def prepare_workspace(
     log: LogFn,
     *,
     github_auth: bool = True,
+    cache_scope: str | None = None,
 ) -> PreparedProject:
     """Create the workspace volume and run clone/upload, detection and install.
 
     `github_auth=False` clones anonymously even if a GitHub token is configured (members' jobs).
+    `cache_scope` (a user name) turns on the dependency cache for GitHub sources.
     On any failure the volume is removed and a `PrepareError` is raised.
     """
     if isinstance(source, GitSource):
@@ -181,7 +205,12 @@ async def prepare_workspace(
         log(f"[thinair] detected {resolved.stack} project; install: {resolved.install}")
 
         await ensure_image(mgr, resolved.stack, log)
-        await _install(mgr, job_id, volume, resolved, log)
+        cache = None
+        if cache_scope and isinstance(source, GitSource) and get_settings().dependency_cache:
+            cache = cache_volume(source.url, cache_scope)
+            labels = {CACHE_LABEL: "true", "thinair.cache.scope": cache_scope[:63]}
+            await asyncio.to_thread(mgr.ensure_persistent_volume, cache, labels)
+        await _install(mgr, job_id, volume, resolved, log, cache)
         return PreparedProject(volume=volume, resolved=resolved, commit_sha=commit)
     except ProjectConfigError as e:
         await asyncio.to_thread(mgr.remove_volume, volume)
@@ -274,9 +303,20 @@ def mirror_env() -> dict[str, str]:
     return env
 
 
-async def _install(mgr, job_id, volume, resolved: ResolvedProject, log: LogFn) -> None:
+async def _install(
+    mgr, job_id, volume, resolved: ResolvedProject, log: LogFn, cache: str | None = None
+) -> None:
     cfg: ProjectConfig = resolved.config
     tail: list[str] = []
+    env = {**resolved.env, **mirror_env()}
+    extra: dict = {}
+    if cache:
+        env.update(CACHE_ENV)
+        extra["mounts"] = [
+            VolumeMount(volume=volume, path="/workspace"),
+            VolumeMount(volume=cache, path="/cache"),
+        ]
+        log("[thinair] using this project's dependency cache")
     res = await mgr.run(
         _spec(
             job_id,
@@ -284,7 +324,7 @@ async def _install(mgr, job_id, volume, resolved: ResolvedProject, log: LogFn) -
             resolved.image,
             ["sh", "-c", resolved.install],
             workdir=resolved.workdir,
-            env={**resolved.env, **mirror_env()},
+            env=env,
             network=cfg.network.install,
             tmp_noexec=False,
             tmpfs_tmp_bytes=512 * 1024**2,
@@ -292,6 +332,7 @@ async def _install(mgr, job_id, volume, resolved: ResolvedProject, log: LogFn) -
             memory_bytes=2 * 1024**3,
             pids_limit=512,
             timeout_s=cfg.timeouts.install_s,
+            **extra,
         ),
         lambda ln: (tail.append(ln), log(ln)),
     )

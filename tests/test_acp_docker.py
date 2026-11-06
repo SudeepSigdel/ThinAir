@@ -79,3 +79,32 @@ async def test_acp_failures_are_mapped(mgr, workspace, mode, code) -> None:
     _ = [ev async for ev in adapter.run("t")]
     r = adapter.result()
     assert not r.success and r.error_code == code, (r.error_message, r.logs_tail)
+
+
+async def test_conversation_through_the_sandbox_stdin(mgr, workspace) -> None:
+    """Replies and approvals reach the agent inside the container (Docker attach, stdin only),
+    and the run ends with a normal result + diff when the conversation is finished."""
+    adapter = CLIAdapter(make_agent("chat"), mgr, "acptest", workspace, host_env={})
+    await adapter.prepare(lambda _: None)
+    assert await adapter.send({"type": "end"}) is False  # not running yet
+    seen = []
+    async for ev in adapter.run("first", interactive=True, ask=True):
+        seen.append((ev.kind, ev.text))
+        if ev.kind == "permission_request":
+            option = "yes" if ev.data["request"] == 1 else None
+            assert await adapter.send(
+                {"type": "permission", "request": ev.data["request"], "option": option}
+            )
+        elif ev.kind == "waiting":
+            waits = sum(1 for k, _ in seen if k == "waiting")
+            msg = {"type": "message", "text": "and more"} if waits == 1 else {"type": "end"}
+            assert await adapter.send(msg)
+    assert ("permission", "Run npm test: Allow once") in seen
+    assert ("user", "and more") in seen
+    assert ("permission", "Edit and more: denied") in seen
+    assert ("text", "You said: and more") in seen
+    r = adapter.result()
+    assert r.success and r.exit_status == 0, (r.error_message, r.logs_tail)
+    assert r.summary == "You said: and more"
+    assert "acp_was_here.txt" in r.diff
+    assert await adapter.send({"type": "end"}) is False  # finished: nothing to send to

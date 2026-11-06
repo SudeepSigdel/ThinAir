@@ -9,12 +9,12 @@ and readable to show on a phone.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlmodel import Session, select
+from sqlmodel import Session, case, func, select
 
 from thinair.agents.config import load_agents
 from thinair.api.auth import require_admin, require_auth
@@ -49,12 +49,31 @@ def jobs_service(request: Request) -> JobService:
 
 
 # ---- schemas -------------------------------------------------------------------------------
+class LastJob(BaseModel):
+    id: str
+    kind: JobKind
+    status: JobStatus
+    task: str | None = None
+    created_at: datetime
+
+
 class RepoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     url: str
     name: str
     created_at: datetime
+    default_agent_id: str | None = None
+    default_ref: str | None = None
+    # Counted over the jobs the caller can see (members: their own).
+    jobs: int = 0
+    active_jobs: int = 0
+    last_job: LastJob | None = None
+
+
+class RepoSettingsIn(BaseModel):
+    default_agent_id: str | None = Field(None, max_length=100)
+    default_ref: str | None = Field(None, max_length=200)
 
 
 class JobOut(BaseModel):
@@ -69,6 +88,8 @@ class JobOut(BaseModel):
     ref: str | None = None
     commit_sha: str | None = None
     parent_job_id: str | None = None
+    interactive: bool = False
+    ask_permissions: bool = False
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
@@ -99,6 +120,10 @@ class JobIn(BaseModel):
     ref: str | None = Field(None, max_length=200)
     task: str | None = Field(None, max_length=10_000)
     agent_id: str | None = Field(None, max_length=100)
+    # Agent conversations (ACP agents only): reply to the agent and approve its actions while
+    # it runs (POST /jobs/{id}/input).
+    interactive: bool = False
+    ask_permissions: bool = False
 
     @model_validator(mode="after")
     def _one_repo(self) -> "JobIn":
@@ -137,14 +162,45 @@ def _visible_repo(s: Session, repo_id: str, who: Principal) -> Repo:
 
 
 # ---- repos ---------------------------------------------------------------------------------
+def _repo_out(s: Session, repos: list[Repo], who: Principal) -> list[RepoOut]:
+    """Repos with job counts and their latest job, most recently used first."""
+    ids = [r.id for r in repos]
+    unfinished = Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])  # type: ignore[attr-defined]
+    q = select(
+        Job.repo_id, func.count(), func.sum(case((unfinished, 1), else_=0)), func.max(Job.id)
+    ).where(Job.repo_id.in_(ids))  # type: ignore[attr-defined]
+    if not who.is_admin:
+        q = q.where(Job.user_id == who.user_id)
+    stats = {rid: (n, act or 0, last) for rid, n, act, last in s.exec(q.group_by(Job.repo_id))}
+    last_ids = [v[2] for v in stats.values()]
+    last = {j.id: j for j in s.exec(select(Job).where(Job.id.in_(last_ids)))}  # type: ignore[attr-defined]
+    out = []
+    for r in repos:
+        n, act, last_id = stats.get(r.id, (0, 0, None))
+        j = last.get(last_id) if last_id else None
+        extra = {
+            "jobs": n,
+            "active_jobs": act,
+            "last_job": LastJob(**j.model_dump()) if j else None,
+        }
+        out.append(RepoOut.model_validate(r).model_copy(update=extra))
+    # Most recent job first; projects without (visible) jobs after, newest added first.
+    return sorted(
+        out,
+        key=lambda o: (o.last_job.id if o.last_job else "", o.created_at.isoformat()),
+        reverse=True,
+    )
+
+
 @router.get("/repos", response_model=list[RepoOut], tags=["repos"])
-def list_repos(who: Principal = Depends(require_auth)) -> list[Repo]:
+def list_repos(who: Principal = Depends(require_auth)) -> list[RepoOut]:
+    """The caller's projects, most recently used first, with job counts and the latest job."""
     with session_scope() as s:
         q = select(Repo)
         if not who.is_admin:
             mine = select(Job.repo_id).where(Job.user_id == who.user_id)
             q = q.where(Repo.id.in_(mine))  # type: ignore[attr-defined]
-        return list(s.exec(q.order_by(Repo.id.desc())))  # type: ignore[attr-defined]
+        return _repo_out(s, list(s.exec(q)), who)
 
 
 @router.post("/repos", response_model=RepoOut, status_code=201, tags=["repos"])
@@ -165,9 +221,31 @@ def add_repo(body: RepoIn) -> Repo:
 
 
 @router.get("/repos/{repo_id}", response_model=RepoOut, tags=["repos"])
-def get_repo(repo_id: str, who: Principal = Depends(require_auth)) -> Repo:
+def get_repo(repo_id: str, who: Principal = Depends(require_auth)) -> RepoOut:
     with session_scope() as s:
-        return _visible_repo(s, repo_id, who)
+        return _repo_out(s, [_visible_repo(s, repo_id, who)], who)[0]
+
+
+@router.patch("/repos/{repo_id}", response_model=RepoOut, tags=["repos"])
+def update_repo(
+    repo_id: str, body: RepoSettingsIn, who: Principal = Depends(require_admin)
+) -> RepoOut:
+    """Set the project's default agent and branch (empty or null clears them). Admins only:
+    the defaults apply to everyone's new jobs on this project."""
+    agent = (body.default_agent_id or "").strip() or None
+    ref = (body.default_ref or "").strip() or None
+    if agent and agent not in load_agents(agents_dir())[0]:
+        raise _err(422, "unknown_agent", "Pick one of the configured agents.")
+    try:
+        GitSource("https://github.com/x/y", ref).validate()
+    except PrepareError as e:
+        raise _err(422, e.code, e.message) from e
+    with session_scope() as s:
+        repo = _visible_repo(s, repo_id, who)
+        repo.default_agent_id, repo.default_ref = agent, ref
+        s.add(repo)
+        s.commit()
+        return _repo_out(s, [repo], who)[0]
 
 
 # ---- jobs ----------------------------------------------------------------------------------
@@ -178,26 +256,47 @@ def create_job(
     who: Principal = Depends(require_auth),
 ) -> JobOut:
     """Queue a `profile` job, or an `agent` job (needs `agent_id` and `task`).
+    Left-out `agent_id` / `ref` come from the project's defaults, if it has them.
     Poll it, or stream `/jobs/{id}/events`."""
+    url = body.repo_url
+    agent_id, ref = body.agent_id, body.ref
+    with session_scope() as s:
+        if body.repo_id:
+            repo: Repo | None = _visible_repo(s, body.repo_id, who)
+        else:
+            assert url is not None
+            repo = s.exec(select(Repo).where(Repo.url == url.strip().rstrip("/"))).first()
+        if repo is not None:
+            url = repo.url
+            agent_id = agent_id or repo.default_agent_id
+            ref = ref or repo.default_ref
     if body.kind == JobKind.AGENT:
-        if body.agent_id not in load_agents(agents_dir())[0]:
+        agents = load_agents(agents_dir())[0]
+        if agent_id not in agents:
             raise _err(422, "unknown_agent", "Pick one of the configured agents.")
         if not (body.task or "").strip():
             raise _err(422, "missing_task", "Describe the task for the agent.")
-    url = body.repo_url
-    if body.repo_id:
-        with session_scope() as s:
-            url = _visible_repo(s, body.repo_id, who).url
+        if body.interactive and agents[agent_id].protocol != "acp":
+            raise _err(
+                422,
+                "not_conversational",
+                f"{agents[agent_id].name} runs one task at a time. Pick an ACP agent (for "
+                "example Claude Code (ACP)) to reply and approve while it works.",
+            )
+    elif body.interactive:
+        raise _err(422, "not_conversational", "Only agent tasks can be conversations.")
     assert url is not None
     return _submit(
         svc,
         who,
         url,
         kind=body.kind,
-        ref=body.ref,
+        ref=ref,
         task=body.task,
-        agent_id=body.agent_id,
+        agent_id=agent_id,
         user_id=who.user_id,
+        interactive=body.interactive,
+        ask_permissions=body.ask_permissions,
     )
 
 
@@ -262,7 +361,53 @@ def retry_job(
         task=job.task,
         agent_id=job.agent_id,
         user_id=job.user_id,
+        interactive=job.interactive,
+        ask_permissions=job.ask_permissions,
     )
+
+
+class InputIn(BaseModel):
+    type: Literal["message", "permission", "stop", "end"]
+    text: str | None = Field(None, max_length=10_000)
+    request: int | None = Field(None, ge=1)  # permission: the request number shown with it
+    option: str | None = Field(None, max_length=200)  # permission: chosen option id; null = deny
+
+
+@router.post("/jobs/{job_id}/input", status_code=202, tags=["agents"])
+async def job_input(
+    job_id: str,
+    body: InputIn,
+    svc: JobService = Depends(jobs_service),
+    who: Principal = Depends(require_auth),
+) -> dict[str, bool]:
+    """Talk to a running agent conversation: `message` (another instruction; queued if the
+    agent is busy), `permission` (answer a request), `stop` (stop the current step), `end`.
+    Only the person whose job it is may answer: it runs with their login."""
+    with session_scope() as s:
+        job, _ = _job_and_repo(s, job_id, who)
+    if job.user_id != who.user_id:
+        raise _err(403, "not_your_job", "Only the person who started this job can answer it.")
+    if not job.interactive:
+        raise _err(409, "not_conversational", "This job runs one task; it doesn't take replies.")
+    if job.status in TERMINAL_STATUSES:
+        raise _err(409, "finished", "This conversation has ended. Start a new task to continue.")
+    command: dict[str, Any] = {"type": body.type}
+    if body.type == "message":
+        text = (body.text or "").strip()
+        if not text:
+            raise _err(422, "missing_text", "Type a message first.")
+        command["text"] = text
+    elif body.type == "permission":
+        if body.request is None:
+            raise _err(422, "missing_request", "Which request are you answering?")
+        command.update(request=body.request, option=body.option)
+    if not await svc.send_input(job_id, command):
+        raise _err(
+            409,
+            "not_ready",
+            "The agent isn't ready for messages yet (it may still be starting). Try again soon.",
+        )
+    return {"delivered": True}
 
 
 @router.get("/jobs/{job_id}/events", tags=["jobs"], response_class=StreamingResponse)
@@ -421,6 +566,8 @@ def list_agents() -> list[dict[str, Any]]:
             "name": a.name,
             "version": a.version,
             "login_hint": a.auth_hint,
+            # ACP agents can hold a conversation (replies and approvals while they work).
+            "conversational": a.protocol == "acp",
         }
         for a in agents.values()
     ]

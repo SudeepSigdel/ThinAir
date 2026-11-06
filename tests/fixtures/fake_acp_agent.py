@@ -71,7 +71,7 @@ def main() -> None:
     send({"id": new["id"], "result": {"sessionId": sid}})
     prompt = read()
     print("[fake-acp] working", file=sys.stderr, flush=True)
-    if MODE == "ok":  # a visible change in the client's working directory
+    if MODE in ("ok", "chat"):  # a visible change in the client's working directory
         cwd = new["params"]["cwd"]
         with open(f"{cwd}/acp_was_here.txt", "w", encoding="utf-8") as f:
             f.write(prompt["params"]["prompt"][0]["text"] + "\n")
@@ -151,6 +151,31 @@ def main() -> None:
         time.sleep(60)
     stop = "refusal" if MODE == "refusal" else "end_turn"
     send({"id": prompt["id"], "result": {"stopReason": stop}})
+    turn = 1
+    while MODE == "chat":  # more prompts in the same session, each asking permission once
+        msg = read()  # exits when the client closes stdin
+        if msg.get("method") != "session/prompt":
+            continue  # e.g. session/cancel
+        turn += 1
+        text = msg["params"]["prompt"][0]["text"]
+        perm = call(
+            "session/request_permission",
+            {
+                "sessionId": sid,
+                "toolCall": {"toolCallId": f"t{turn}", "title": f"Edit {text}"},
+                "options": options,
+            },
+        )
+        log({"turn": turn, "text": text, "perm_reply": perm})
+        update(
+            sid,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": f"r{turn}",
+                "content": {"type": "text", "text": f"You said: {text}"},
+            },
+        )
+        send({"id": msg["id"], "result": {"stopReason": "end_turn"}})
     read()  # the client closes stdin when done
 
 

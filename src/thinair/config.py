@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     # profile reports, status history and agent messages are kept.
     log_retention_days: int = Field(default=30, ge=0)
 
+    # Agent conversations (jobs started with "keep the conversation open"): how long the agent
+    # waits for your next message or an approval before it finishes the job. The sandbox (and a
+    # job slot) stays in use while it waits.
+    agent_idle_s: int = Field(default=600, ge=30, le=86400)
+
+    # Keep package downloads (pip/uv/npm/yarn caches) per project and user between jobs, so
+    # repeat jobs install without re-downloading. `thinair cache clear` frees the space.
+    dependency_cache: bool = True
+
     # Remote runners (other machines that run profile jobs; see thinair/runners.py):
     # auto = a profile job goes to a runner if one is waiting for work, else runs here (and comes
     #        back here if no runner takes it within runner_claim_timeout_s);

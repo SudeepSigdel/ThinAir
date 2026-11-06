@@ -5,8 +5,8 @@ from pydantic import BaseModel
 
 from thinair.project.config import ProjectConfig, ProjectConfigError
 
-PYTHON_IMAGE = "thinair-sandbox-python:1"
-NODE_IMAGE = "thinair-sandbox-node:1"
+PYTHON_IMAGE = "thinair-sandbox-python:2"
+NODE_IMAGE = "thinair-sandbox-node:2"
 IMAGES = {"python": PYTHON_IMAGE, "node": NODE_IMAGE}
 
 # Dependencies live inside the workspace volume so they survive between the install container

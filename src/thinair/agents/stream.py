@@ -21,7 +21,19 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Kind = Literal["text", "tool", "result", "auth_error", "log"]
+# `waiting`, `user`, `permission_request` and `permission` only come from ACP conversations
+# (the agent waits for a reply, the reply itself, and approvals asked from / answered on a phone).
+Kind = Literal[
+    "text",
+    "tool",
+    "result",
+    "auth_error",
+    "log",
+    "waiting",
+    "user",
+    "permission_request",
+    "permission",
+]
 
 # `system/api_retry` error codes that mean "this login does not work" (from the headless docs).
 _AUTH_ERRORS = {
@@ -272,9 +284,46 @@ class StreamParser:
         elif kind == "tool_update" and msg.get("status") == "failed":
             what = f": {_short(msg['title'])}" if msg.get("title") else ""
             events.append(AgentEvent("log", f"[agent] tool failed{what}"))
-        elif kind == "permission" and not msg.get("allowed"):
+        elif kind == "permission_request" and isinstance(msg.get("request"), int):
+            options = [
+                {
+                    "id": str(o.get("id")),
+                    "name": _short(o.get("name") or o.get("id"), 80),
+                    "kind": o.get("kind") if isinstance(o.get("kind"), str) else None,
+                }
+                for o in msg.get("options") or []
+                if isinstance(o, dict) and o.get("id")
+            ][:6]
             events.append(
-                AgentEvent("log", f"[agent] declined (no allow option): {_short(msg.get('title'))}")
+                AgentEvent(
+                    "permission_request",
+                    _short(msg.get("title") or "tool"),
+                    {"request": msg["request"], "options": options, "tool_kind": msg.get("kind")},
+                )
+            )
+        elif kind == "permission":
+            by, title = msg.get("by"), _short(msg.get("title"))
+            if by in ("you", "timeout"):  # answers to permission_request
+                how = (
+                    "no answer in time, cancelled"
+                    if by == "timeout"
+                    else str(msg.get("option") or ("allowed" if msg.get("allowed") else "denied"))
+                )
+                events.append(
+                    AgentEvent(
+                        "permission", f"{title}: {how}", {"allowed": bool(msg.get("allowed"))}
+                    )
+                )
+            elif not msg.get("allowed"):
+                events.append(AgentEvent("log", f"[agent] declined (no allow option): {title}"))
+        elif kind == "waiting":
+            idle = msg.get("idle_s")
+            events.append(AgentEvent("waiting", "Waiting for your reply", {"idle_s": idle}))
+        elif kind == "user" and isinstance(msg.get("text"), str):
+            events.append(AgentEvent("user", _short(msg["text"], 2000)))
+        elif kind == "ended":
+            events.append(
+                AgentEvent("log", f"[agent] conversation ended: {_short(msg.get('reason'))}")
             )
         elif kind == "plan":
             events.append(
@@ -292,8 +341,8 @@ class StreamParser:
             events.append(AgentEvent("result", text, {"is_error": True}))
         elif kind == "result":
             reason = str(msg.get("stopReason") or "end_turn")
-            ok = reason == "end_turn"
-            text = self._last_text if ok else f"The agent stopped early ({reason})."
+            ok = reason in ("end_turn", "cancelled")  # cancelled = you stopped the turn
+            text = self._last_text if reason == "end_turn" else f"The agent stopped ({reason})."
             data: dict[str, Any] = {"is_error": not ok, "stop_reason": reason}
             if self._cost is not None:
                 data["total_cost_usd"] = self._cost

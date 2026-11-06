@@ -25,7 +25,7 @@ from thinair.profiler.report import to_markdown
 from thinair.profiler.runner import profile_source
 from thinair.project.prepare import GitSource, prepare_workspace
 from thinair.sandbox.manager import SandboxManager
-from thinair.users import auth_volume_name, github_token_allowed, job_user
+from thinair.users import OWNER_NAME, auth_volume_name, github_token_allowed, job_user
 
 
 def _owner(job: Job):  # noqa: ANN202
@@ -34,6 +34,12 @@ def _owner(job: Job):  # noqa: ANN202
         if user is not None:
             s.expunge(user)
         return user
+
+
+def cache_scope(user) -> str:  # noqa: ANN001
+    """Whose dependency cache a job uses: its user's (names never change; the owner is
+    'admin', a name no member can have)."""
+    return OWNER_NAME if user is None else user.name
 
 
 def owner_github_auth(job: Job) -> bool:
@@ -50,6 +56,7 @@ async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecR
         log=ctx.log,
         on_run=lambda rec: ctx.emit(EventType.PROFILE_RUN, rec.model_dump(mode="json")),
         github_auth=owner_github_auth(ctx.job),
+        cache_scope=cache_scope(_owner(ctx.job)),
     )
     return save_profile_result(
         ctx.job.id, ctx.repo.name, result, prepared.commit_sha, prepared.resolved.stack
@@ -126,6 +133,7 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
         job.id,
         ctx.log,
         github_auth=github_token_allowed(owner),
+        cache_scope=cache_scope(owner),
     )
     try:
         # Each user logs in to the agent in their own volume; API keys from Thinair's own
@@ -143,7 +151,12 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
         except AgentAuthError as e:
             return ExecResult(JobStatus.FAILED, e.code, e.message)
         ctx.log(f"[thinair] {cfg.name} is working on the task")
-        async for ev in adapter.run(job.task or ""):
+        conversation = job.interactive and cfg.protocol == "acp"
+        if conversation:
+            ctx.on_input = adapter.send
+        async for ev in adapter.run(
+            job.task or "", interactive=conversation, ask=conversation and job.ask_permissions
+        ):
             if ev.kind == "log":
                 ctx.log(ev.text)
             else:

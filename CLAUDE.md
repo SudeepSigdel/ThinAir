@@ -113,6 +113,13 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Dependencies are installed into the workspace volume (`/workspace/.venv`, `node_modules`) so network-less test
   containers can use them. Sandbox base images are built from `sandbox/images/*.Dockerfile` on first use.
 - Fixtures in `tests/fixtures/` hold ~150 MB in their tests; expected profiler minimum is the 256m tier.
+- Dependency cache: `prepare_workspace(cache_scope=<user name>)` (executors pass `cache_scope(owner)`, owner =
+  "admin"; runners and the CLI pass none) mounts volume `thinair-cache-<sha(scope url)>` (label `thinair.cache`,
+  NOT managed, so the janitor keeps it) on /cache for the INSTALL step only, with PIP_/UV_CACHE_DIR, npm_config_cache,
+  YARN_CACHE_FOLDER. Per user because install commands are repo code and can write anything there. Sandbox images
+  are `:2` (they create /cache owned by 10001; same empty-volume ownership gotcha). The python image must NOT set
+  PIP_NO_CACHE_DIR: pip treats any value, even "0"/"false", as "no cache". `thinair cache list|clear`.
+  Measured (psf/requests, fast mirror): downloads 9 -> 0, 36 s -> 32 s; the win grows with slow links / big deps.
 
 ## Dev environment gotcha (diagnosed 2026-11-04, Windows + Docker Desktop)
 - On this network IPv4 to Debian/Fastly CDNs crawls (~10 B/s from the host too) while IPv6 is fast. Containers are
@@ -186,7 +193,14 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Icons are PNGs drawn by a stdlib-only script (192/512, maskable) plus `icon.svg`.
 - Browser smoke test (not in CI, needs Node + Edge/Chrome): run the app with fake executors and drive it with
   `playwright-core` (`channel: "msedge"`), phone viewport. Playwright's `waitForFunction` is blocked by our CSP;
-  use locators. 24 checks pass, incl. XSS-as-text, cancel/retry, agent tab + diff, reload, logout, dark mode, SW.
+  use locators. 38 checks pass, incl. XSS-as-text, cancel/retry, agent tab + diff, PR, projects + defaults,
+  reload, logout, dark mode, SW.
+- Projects (routes `#/`, `#/repo/<id>`, `#/job/<id>`): home = projects (`GET /api/repos`: most recently used first,
+  `jobs`/`active_jobs`/`last_job` counted over jobs the caller can see) + add-project form + recent jobs. The project
+  page holds the job form (agent tab first; no URL field), its jobs (`/api/jobs?repo_id=`) and, for admins, defaults
+  (`PATCH /api/repos/{id}`: `default_agent_id`, `default_ref`, migration 0008; `create_job` fills left-out
+  agent/ref from them, also when the job names the repo by URL). Views that load data show `#loading` until filled
+  (else the previous project's name flashes, and tests race).
 
 ## Agents (`src/thinair/agents/`, docs: `docs/agents.md`)
 - `config.py`: one YAML per agent (`builtin/claude.yaml` + `$THINAIR_DATA_DIR/agents/*.yaml`, user wins by id).
@@ -229,6 +243,54 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - Built-ins `claude-acp` (@agentclientprotocol/claude-agent-acp 0.95.0 + claude-code for login/check) and
   `gemini-acp` (`gemini --acp`). Tests: `test_acp.py` (host Node + `fixtures/fake_acp_agent.py`; skips without
   Node), `test_acp_docker.py` (fake agent through CLIAdapter), real CLIs in `test_more_agents_docker.py`.
+
+## ACP registry agents (`src/thinair/agents/registry.py`)
+- `thinair agent search|add|remove`: reads https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json
+  (`{"agents": [...]}`; schema: id, name, version, distribution {npx|binary|uvx}; NO auth info). `config_for(entry)`:
+  npx -> `install: npm install -g pkg@ver` + command = the package's npm `bin` (registry.npmjs.org/<pkg>/<ver>; one
+  entry, or the unscoped name, or the shortest name when all point to one file); binary -> `download:` for
+  linux-x86_64/aarch64 (musl and macOS ignored), command `/opt/thinair-agent/<cmd>`, or `thinair-agent-cmd` (a
+  symlink) when the program's name differs per arch; uvx unsupported. Always `env.HOME=/thinair-auth` (the agent's
+  own login/config dir lands in its volume), login_command = the agent itself, check_command none. Refuses ids of
+  built-ins unless --force. HTTP helpers are looked up at call time (`get=None`) so tests can monkeypatch them.
+- `AgentConfig.download` (+ `install` now optional; one of them required): a build stage FROM python:3.12-slim runs
+  a base64-embedded fetch script (urllib, sha256 check when given, tarfile `filter="data"` / zipfile, exec bits
+  kept), then `COPY --from=thinair-fetch /opt/thinair-agent`. No download tool needed in the agent image.
+- All 43 Linux-installable registry agents generate valid configs (2026-11-07). Live image + ACP checks: see
+  docs/agents.md.
+
+## Agent conversations (phase 4)
+- `Job.interactive` / `Job.ask_permissions` (migration 0009, server_default false). Only ACP agents (`/api/agents`
+  `conversational`); others 422 `not_conversational`. Retry keeps both flags.
+- Driver (acp_driver.js) with `THINAIR_ACP_INTERACTIVE=1`: after each turn prints `{"acp":"waiting"}` and reads JSON
+  lines from ITS stdin: message (queued while busy), permission {request, option|null}, stop (session/cancel), end.
+  `THINAIR_ACP_APPROVAL=ask` forwards session/request_permission as `permission_request` {request, options} and
+  replies when answered (`permission` {by: you|timeout|auto}); unanswered/idle after `THINAIR_ACP_IDLE_S`
+  (`agent_idle_s`, 600) -> cancelled / conversation ends. stopReason `cancelled` counts as OK (you stopped it).
+- Sandbox stdin: `SandboxSpec.stdin` -> `stdin_open`; `StdinPipe` is connected with `container.attach_socket(stdin,
+  stream)` BEFORE start (nothing lost). Verified through tecnativa/docker-socket-proxy with only CONTAINERS + POST
+  (no new proxy permissions). `CLIAdapter.run(task, interactive=, ask=)` + `send(cmd)`; executor sets
+  `ctx.on_input = adapter.send`; `JobService._contexts` + `send_input(job_id, cmd)`.
+- API `POST /api/jobs/{id}/input` {type, text?, request?, option?}: 403 `not_your_job` unless the caller IS the
+  job's user (admins can see but not answer: it runs with that user's login), 409 not_conversational / finished /
+  not_ready (no handler yet), 422 for empty text etc.
+- UI: project form checkboxes `#opt-chat` (only enabled for conversational agents; the choice is remembered only
+  when it was enabled) and `#opt-ask`; job page `#reply-form` (Send / Stop this step / Finish), permission cards
+  (`li.ask`, closed by the matching `permission` event, so SSE replay restores them), user bubbles (`li.user`).
+- A waiting conversation keeps its sandbox and one job slot (`max_concurrent_jobs`, default 1).
+- Tests: test_acp.py (driver over real stdin with the fake agent's `chat` mode), test_conversations.py (API + fake
+  executor), test_acp_docker.py (stdin through a real container), browser smoke 49 checks.
+
+## Install on fresh machines / Oracle (`install.sh`, docs/oracle.md)
+- Missing Docker -> `install_docker` (get.docker.com, consent via prompt or THINAIR_INSTALL_DOCKER=yes; no tty = no),
+  adds the user to the docker group; when docker needs root this run, a `docker()` shell function wraps `sudo docker`
+  (shellcheck SC2032/2033 disabled on purpose). Tailscale missing -> `install_tailscale` (tailscale.com/install.sh),
+  `sudo tailscale up` prints the login link; `tailscale serve` retried through sudo (needs root/operator).
+- Oracle detection: `/sys/class/dmi/id/chassis_asset_tag` == OracleCloud.com (what cloud-init uses). Domain mode on
+  Oracle explains the console security list + offers iptables (Ubuntu, `-I INPUT 1`, netfilter-persistent) or
+  firewalld (Oracle Linux). get.docker.com does not support Oracle Linux: docs say Ubuntu.
+- `thinair doctor` "Version" check: anonymous GET api.github.com/repos/SudeepSigdel/ThinAir/releases/latest; warns
+  when newer; update = re-run the installer. Untested on a real Oracle VM (owner will test).
 
 ## Remote runners (`src/thinair/runners.py`, `api/runner_api.py`, `runner_client.py`, phase 3 step 21)
 - Owner's defaults (accepted with "continue"): the runner connects OUT (long-poll), one secret per runner
@@ -328,3 +390,5 @@ Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini
 Phase 3: 17 egress allowlist (Claude Code on by default), 18 Postgres support, 19 multiple users (design choices
 made without the owner, listed in README "Several users"; review them), 20 ACP agents and 21 remote runners
 (profile jobs only) done.
+Phase 4 (2026-11-07): projects screen + per-project defaults + dependency cache, ACP registry agents, agent
+conversations (replies + approvals from the phone), installer that installs Docker/Tailscale and knows Oracle Cloud.

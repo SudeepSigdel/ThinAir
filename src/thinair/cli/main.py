@@ -259,6 +259,84 @@ def agents() -> None:
         raise typer.Exit(1)
 
 
+agent_app = typer.Typer(help="Add coding agents from the ACP registry (about 45 agents).")
+app.add_typer(agent_app, name="agent")
+
+
+def _registry():  # noqa: ANN202
+    from thinair.agents.registry import RegistryError, fetch_registry
+
+    try:
+        return fetch_registry()
+    except RegistryError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+
+@agent_app.command("search")
+def agent_search(query: str = typer.Argument("", help="Filter by id or name")) -> None:
+    """List agents in the ACP registry and whether Thinair can install them."""
+    from thinair.agents.config import load_agents
+    from thinair.agents.registry import how
+    from thinair.jobs.executors import agents_dir
+
+    have = load_agents(agents_dir())[0]
+    q = query.lower().strip()
+    for e in _registry():
+        if q and q not in e["id"] and q not in str(e.get("name", "")).lower():
+            continue
+        mark = "added" if e["id"] in have else how(e)
+        typer.echo(f"{e['id']:<20} {e.get('name', ''):<24} {e.get('version', ''):<12} {mark}")
+    typer.echo("Add one with: thinair agent add <id>")
+
+
+@agent_app.command("add")
+def agent_add(
+    agent_id: str = typer.Argument(..., help="Registry id, e.g. github-copilot-cli"),
+    force: bool = typer.Option(False, "--force", help="Replace an agent with the same id"),
+) -> None:
+    """Write an agent config for a registry agent into $THINAIR_DATA_DIR/agents/."""
+    from thinair.agents.config import BUILTIN_DIR, load_agents
+    from thinair.agents.registry import RegistryError, config_for, to_yaml
+    from thinair.jobs.executors import agents_dir
+
+    entry = next((e for e in _registry() if e["id"] == agent_id), None)
+    if entry is None:
+        typer.echo(
+            f"No agent {agent_id!r} in the ACP registry: see thinair agent search.", err=True
+        )
+        raise typer.Exit(1)
+    builtin = (BUILTIN_DIR / f"{agent_id}.yaml").exists()
+    target = agents_dir() / f"{agent_id}.yaml"
+    if (builtin or agent_id in load_agents(agents_dir())[0]) and not force:
+        what = "a built-in agent" if builtin else "an agent you already added"
+        typer.echo(f"{agent_id!r} is {what}. Use --force to replace it.", err=True)
+        raise typer.Exit(1)
+    try:
+        cfg = config_for(entry)
+    except RegistryError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(to_yaml(cfg, entry), encoding="utf-8")
+    typer.echo(f"Added {cfg['name']} {cfg.get('version') or ''} as {target}")
+    typer.echo(f"Next: log it in with `thinair auth {agent_id}` (its own login and volume).")
+    typer.echo("Its image is built on its first job (or now, with `thinair auth`).")
+
+
+@agent_app.command("remove")
+def agent_remove(agent_id: str) -> None:
+    """Delete an agent you added (built-in agents can't be removed). Its login volume is kept."""
+    from thinair.jobs.executors import agents_dir
+
+    target = agents_dir() / f"{agent_id}.yaml"
+    if not target.exists():
+        typer.echo(f"No added agent {agent_id!r} in {agents_dir()}.", err=True)
+        raise typer.Exit(1)
+    target.unlink()
+    typer.echo(f"Removed {agent_id}. Its login is kept in volume thinair-auth-{agent_id}.")
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """Send a test notification with the configured Telegram settings."""
@@ -497,6 +575,46 @@ def doctor(
     checks = run_checks(online=not offline)
     typer.echo(render(checks))
     raise typer.Exit(1 if any(c.status == "fail" for c in checks) else 0)
+
+
+cache_app = typer.Typer(help="Per-project dependency caches (package downloads kept between jobs).")
+app.add_typer(cache_app, name="cache")
+
+
+@cache_app.command("list")
+def cache_list() -> None:
+    """Show the dependency cache volumes and whose they are."""
+    from thinair.project.prepare import CACHE_LABEL
+
+    try:
+        vols = SandboxManager().volumes_with_label(CACHE_LABEL)
+    except SandboxError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    for name, labels in sorted(vols):
+        typer.echo(f"{name}  user={labels.get('thinair.cache.scope', '?')}")
+    typer.echo(f"{len(vols)} cache volume(s). Sizes: docker system df -v")
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Delete every dependency cache. The next job on each project downloads its packages again."""
+    from thinair.project.prepare import CACHE_LABEL
+
+    mgr = SandboxManager()
+    try:
+        vols = mgr.volumes_with_label(CACHE_LABEL)
+    except SandboxError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    kept = 0
+    for name, _ in vols:
+        try:
+            mgr.remove_volume(name)
+        except Exception:  # noqa: BLE001 - in use by a running install: keep it
+            kept += 1
+    note = f" {kept} in use, kept." if kept else ""
+    typer.echo(f"Removed {len(vols) - kept} cache volume(s).{note}")
 
 
 @app.command()

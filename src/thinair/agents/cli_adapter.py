@@ -14,6 +14,7 @@ container, and are masked in all captured output.
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 from collections import deque
@@ -21,12 +22,12 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from thinair.agents.config import AgentConfig
+from thinair.agents.config import DOWNLOAD_DIR, AgentConfig
 from thinair.agents.stream import AgentEvent, StreamParser
 from thinair.config import get_settings
 from thinair.project.prepare import GIT_IMAGE, PreparedProject, ensure_image
 from thinair.sandbox.egress import EgressGateway
-from thinair.sandbox.manager import SandboxManager
+from thinair.sandbox.manager import SandboxManager, StdinPipe
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
 
 LogFn = Callable[[str], None]
@@ -75,8 +76,65 @@ class AgentAdapter(Protocol):
 
 
 # ---- agent image -----------------------------------------------------------------------------
+# Runs in a throwaway build stage (python:3.12-slim, as root): fetch this machine's archive,
+# check its sha256, unpack it safely (tarfile "data" filter / zipfile refuse paths outside the
+# target), keep exec bits. Only the unpacked directory is copied into the agent image.
+_FETCH = """
+import hashlib, io, json, os, platform, stat, sys, tarfile, urllib.request, zipfile
+spec, dest = json.loads(SPEC), DEST
+key = {"x86_64": "linux-x86_64", "amd64": "linux-x86_64",
+       "aarch64": "linux-aarch64", "arm64": "linux-aarch64"}.get(platform.machine())
+t = spec.get(key)
+if t is None:
+    sys.exit(f"this agent has no download for {platform.machine()}")
+data = urllib.request.urlopen(t["url"], timeout=900).read()
+if t.get("sha256") and hashlib.sha256(data).hexdigest() != t["sha256"]:
+    sys.exit("checksum mismatch: refusing to install " + t["url"])
+os.makedirs(dest)
+name = t["url"].split("?")[0].lower()
+if name.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".tar")):
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        tf.extractall(dest, filter="data")
+elif name.endswith(".zip"):
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist():
+            path = zf.extract(info, dest)
+            mode = (info.external_attr >> 16) & 0o755
+            if mode and not info.is_dir():
+                os.chmod(path, mode | 0o444)
+else:
+    path = os.path.join(dest, os.path.basename(name))
+    with open(path, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o755)
+if t.get("cmd"):
+    os.symlink(os.path.join(dest, t["cmd"]), os.path.join(dest, "thinair-agent-cmd"))
+for root, dirs, files in os.walk(dest):
+    for n in dirs + files:
+        p = os.path.join(root, n)
+        os.chmod(p, os.stat(p).st_mode | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+                 | (0o111 if os.path.isdir(p) else 0))
+"""
+
+
+def _fetch_stage(cfg: AgentConfig) -> list[str]:
+    import base64
+    import json
+
+    spec = {k: v.model_dump() for k, v in (cfg.download or {}).items()}
+    code = f"SPEC = {json.dumps(json.dumps(spec))}\nDEST = {DOWNLOAD_DIR!r}\n" + _FETCH
+    b64 = base64.b64encode(code.encode()).decode()  # no quoting problems in the RUN line
+    return [
+        f"FROM {CA_CERTS_IMAGE} AS thinair-fetch",
+        f"RUN python -c \"import base64; exec(base64.b64decode('{b64}'))\"",
+    ]
+
+
 def agent_dockerfile(cfg: AgentConfig, base_image: str, stack: str) -> str:
-    lines = [f"FROM {base_image}", "USER root"]
+    lines = _fetch_stage(cfg) if cfg.download else []
+    lines += [f"FROM {base_image}", "USER root"]
+    if cfg.download:
+        lines.append(f"COPY --from=thinair-fetch {DOWNLOAD_DIR} {DOWNLOAD_DIR}")
     if cfg.needs_ca_certs:
         # From the same Debian release as our images; no apt needed.
         lines += [
@@ -97,8 +155,9 @@ def agent_dockerfile(cfg: AgentConfig, base_image: str, stack: str) -> str:
     # Docker copies an image's mount-point ownership into an empty volume), so the sandbox user
     # must own it or the agent cannot save its login.
     auth_dir = cfg.auth.config_dir
+    if cfg.install:
+        lines.append(f"RUN {cfg.install}")
     lines += [
-        f"RUN {cfg.install}",
         f"RUN mkdir -p {auth_dir} && chown 10001:10001 {auth_dir}",
         "USER 10001:10001",
         "",
@@ -144,6 +203,7 @@ class CLIAdapter:
         self._result = AgentResult()
         self._tail: deque[str] = deque(maxlen=40)
         self._egress_log: list[str] = []
+        self._stdin: StdinPipe | None = None
 
     # -- helpers --
     def _mounts(self, workspace_ro: bool = False) -> list[VolumeMount]:
@@ -239,9 +299,24 @@ class CLIAdapter:
         if res.exit_code != 0:
             raise AgentAuthError(self._auth_hint())
 
-    async def run(self, task: str) -> AsyncIterator[AgentEvent]:
+    async def send(self, command: dict[str, Any]) -> bool:
+        """Send a conversation command (see acp_driver.js) to the running agent. False if it
+        isn't a conversation or isn't running."""
+        pipe = self._stdin
+        if pipe is None or not pipe.connected:
+            return False
+        line = json.dumps(command, ensure_ascii=False)
+        return await asyncio.to_thread(pipe.write_line, line)
+
+    async def run(
+        self, task: str, *, interactive: bool = False, ask: bool = False
+    ) -> AsyncIterator[AgentEvent]:
+        """Run the agent on `task`. `interactive` (ACP agents only) keeps the session open for
+        more messages via `send()`; `ask` forwards permission requests instead of allowing them."""
         if self._image is None:
             raise RuntimeError("call prepare() first")
+        if interactive and self.cfg.protocol != "acp":
+            raise ValueError("conversations need an ACP agent")
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
         patterns = [p.lower() for p in self.cfg.auth_error_patterns]
         auth_hit = False
@@ -270,9 +345,19 @@ class CLIAdapter:
             yield AgentEvent(
                 "log", "[thinair] outbound traffic limited to: " + ", ".join(gateway.allow)
             )
+        if interactive:
+            idle = str(int(get_settings().agent_idle_s))
+            conv = {
+                "THINAIR_ACP_INTERACTIVE": "1",
+                "THINAIR_ACP_APPROVAL": "ask" if ask else "auto",
+                "THINAIR_ACP_IDLE_S": idle,
+            }
+            spec_kw["env"] = {**spec_kw.get("env", self._env()), **conv}
+            spec_kw["stdin"] = True
+            self._stdin = StdinPipe()
         try:
             spec = self._spec(self.cfg.argv(task), **spec_kw)
-            runner = asyncio.create_task(self._mgr.run(spec, on_line))
+            runner = asyncio.create_task(self._mgr.run(spec, on_line, self._stdin))
             runner.add_done_callback(on_done)
             try:
                 while (ev := await queue.get()) is not None:

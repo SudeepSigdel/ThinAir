@@ -118,9 +118,12 @@ async def profile_source(
     log: LogFn,
     on_run: ProgressFn | None = None,
     github_auth: bool = True,
+    cache_scope: str | None = None,
 ) -> tuple[ProfileResult, PreparedProject]:
     """Prepare a repo, profile it, and always remove the workspace volume afterwards."""
-    prepared = await prepare_workspace(mgr, source, job_id, log, github_auth=github_auth)
+    prepared = await prepare_workspace(
+        mgr, source, job_id, log, github_auth=github_auth, cache_scope=cache_scope
+    )
     try:
         return await run_profile(mgr, prepared, job_id, on_run=on_run, log=log), prepared
     finally:

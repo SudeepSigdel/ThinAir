@@ -47,7 +47,7 @@ def build_container_args(spec: SandboxSpec) -> dict[str, Any]:
         "labels": {LABEL_MANAGED: "true", LABEL_JOB: spec.job_id},
         "detach": True,
         "tty": False,
-        "stdin_open": False,
+        "stdin_open": spec.stdin,
         "privileged": False,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],
@@ -64,6 +64,54 @@ def build_container_args(spec: SandboxSpec) -> dict[str, Any]:
             m.volume: {"bind": m.path, "mode": "ro" if m.read_only else "rw"} for m in spec.mounts
         },
     }
+
+
+class StdinPipe:
+    """Send lines to a running sandbox's stdin (only for specs with `stdin=True`).
+
+    `run()` connects it (Docker attach, stdin only) before the container starts, so nothing
+    written is lost; `write_line` returns False when the container isn't running (yet/anymore).
+    Works through docker-socket-proxy with the CONTAINERS + POST permissions Thinair already has.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sock: Any = None
+        self._closed = False
+
+    def _connect(self, container: Container) -> None:
+        sock = container.attach_socket(params={"stdin": 1, "stream": 1})
+        raw = getattr(sock, "_sock", sock)
+        with self._lock:
+            if self._closed:
+                with contextlib.suppress(OSError):
+                    raw.close()
+                return
+            self._sock = raw
+
+    def write_line(self, text: str) -> bool:
+        if "\n" in text or "\r" in text:
+            raise ValueError("one line at a time")
+        with self._lock:
+            if self._sock is None or self._closed:
+                return False
+            try:
+                self._sock.sendall(text.encode() + b"\n")
+                return True
+            except OSError:
+                return False
+
+    @property
+    def connected(self) -> bool:
+        return self._sock is not None and not self._closed
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._sock is not None:
+                with contextlib.suppress(OSError):
+                    self._sock.close()
+            self._sock = None
 
 
 class _Handle:
@@ -191,6 +239,11 @@ class SandboxManager:
         except (docker.errors.BuildError, APIError, requests.exceptions.RequestException) as e:
             raise SandboxError(f"Could not build image {tag}: {e}") from e
 
+    def volumes_with_label(self, label: str) -> list[tuple[str, dict[str, str]]]:
+        """(name, labels) of every volume carrying `label`."""
+        vols = self.client.volumes.list(filters={"label": label})
+        return [(v.name, v.attrs.get("Labels") or {}) for v in vols]
+
     def remove_volume(self, name: str) -> None:
         with contextlib.suppress(docker.errors.NotFound):
             self.client.volumes.get(name).remove(force=True)
@@ -282,12 +335,17 @@ class SandboxManager:
         return res, lines
 
     # ---- running -------------------------------------------------------------------------
-    async def run(self, spec: SandboxSpec, on_line: LineCallback | None = None) -> SandboxResult:
+    async def run(
+        self,
+        spec: SandboxSpec,
+        on_line: LineCallback | None = None,
+        stdin: StdinPipe | None = None,
+    ) -> SandboxResult:
         """Run to completion. Cancelling the awaiting task kills and removes the container."""
         loop = asyncio.get_running_loop()
         handle = _Handle()
         cb = (lambda line: loop.call_soon_threadsafe(on_line, line)) if on_line else None
-        fut = asyncio.ensure_future(asyncio.to_thread(self.run_blocking, spec, cb, handle))
+        fut = asyncio.ensure_future(asyncio.to_thread(self.run_blocking, spec, cb, handle, stdin))
         try:
             return await asyncio.shield(fut)
         except asyncio.CancelledError:
@@ -301,7 +359,10 @@ class SandboxManager:
         spec: SandboxSpec,
         on_line: LineCallback | None = None,
         handle: _Handle | None = None,
+        stdin: StdinPipe | None = None,
     ) -> SandboxResult:
+        if stdin is not None and not spec.stdin:
+            raise ValueError("a StdinPipe needs a spec with stdin=True")
         spec = self.fit(spec)
         handle = handle or _Handle()
         container: Container | None = None
@@ -320,6 +381,11 @@ class SandboxManager:
             except (APIError, requests.exceptions.RequestException) as e:
                 raise SandboxError(f"Could not create sandbox: {e}") from e
             handle.attach(container)
+            if stdin is not None:
+                try:
+                    stdin._connect(container)
+                except (APIError, requests.exceptions.RequestException, OSError) as e:
+                    raise SandboxError(f"Could not connect to the sandbox's input: {e}") from e
 
             t0 = time.monotonic()
             try:
@@ -363,6 +429,8 @@ class SandboxManager:
                 output_truncated=truncated.is_set(),
             )
         finally:
+            if stdin is not None:
+                stdin.close()
             if timer is not None:
                 timer.cancel()
             if container is not None:

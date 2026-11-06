@@ -94,6 +94,9 @@ class Repo(SQLModel, table=True):
     name: str
     default_branch: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+    # Project defaults, used when a new job leaves them out (set by admins on the project page).
+    default_agent_id: str | None = None
+    default_ref: str | None = None
 
 
 class Job(SQLModel, table=True):
@@ -105,6 +108,10 @@ class Job(SQLModel, table=True):
     task: str | None = None
     ref: str | None = None
     commit_sha: str | None = None
+    # Agent conversations (ACP agents): keep the session open for more messages from the phone,
+    # and (ask_permissions) forward the agent's permission requests instead of allowing them.
+    interactive: bool = False
+    ask_permissions: bool = False
     # For `pr` jobs: the agent job whose patch is turned into a pull request.
     parent_job_id: str | None = Field(default=None, foreign_key="job.id", index=True)
     # Who the job belongs to (and acts as: agent login, GitHub token policy). None = the owner.

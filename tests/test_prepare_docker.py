@@ -185,3 +185,36 @@ async def test_every_workspace_image_hands_the_volume_to_the_sandbox_user(
     )
     res, lines = await mgr.run_capture(spec)
     assert res.exit_code == 0, lines
+
+
+@pytest.mark.parametrize("stack", ["python", "node"])
+async def test_dependency_cache_is_writable_and_survives_jobs(mgr, stack) -> None:
+    """The install step sees the per-project cache on /cache (writable by the sandbox user, even
+    as a fresh empty volume) with the package managers pointed at it; it outlives the job."""
+    from thinair.project.config import parse_project_config
+    from thinair.project.detect import resolve_project
+    from thinair.project.prepare import CACHE_LABEL, _install, cache_volume, ensure_image
+
+    cache = cache_volume(f"https://github.com/thinair-test/{stack}", "t5cache")
+    names = {"requirements.txt"} if stack == "python" else {"package.json"}
+    base = resolve_project(names, parse_project_config(None))
+    await ensure_image(mgr, stack, lambda _: None)
+    mgr.ensure_persistent_volume(cache, {CACHE_LABEL: "true"})
+    try:
+        for i, cmd in enumerate(
+            [
+                'mkdir -p "$PIP_CACHE_DIR" "$npm_config_cache" && echo kept > "$PIP_CACHE_DIR/m"',
+                'test "$(cat /cache/pip/m)" = kept && test -d /cache/npm && test -w /cache',
+            ]
+        ):
+            ws = f"thinair-ws-t5cache{stack}{i}"
+            mgr.create_volume(ws, "t5cache")
+            try:
+                await _install(
+                    mgr, "t5cache", ws, base.model_copy(update={"install": cmd}), print, cache
+                )
+            finally:
+                mgr.remove_volume(ws)
+        assert any(n == cache for n, _ in mgr.volumes_with_label(CACHE_LABEL))
+    finally:
+        mgr.remove_volume(cache)

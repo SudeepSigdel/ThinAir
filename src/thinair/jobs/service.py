@@ -43,6 +43,10 @@ class JobContext:
     def emit(self, type_: EventType, data: dict[str, Any]) -> None:
         self.events.emit(self.job.id, type_, data)
 
+    # Set by an executor whose job can take input while running (agent conversations):
+    # an async function that delivers one command and says whether it was delivered.
+    on_input: "Callable[[dict[str, Any]], Awaitable[bool]] | None" = None
+
 
 Executor = Callable[[JobContext, SandboxManager | None], Awaitable[ExecResult]]
 
@@ -78,6 +82,7 @@ class JobService:
         self._n_remote = max(1, remote_workers) if remote_executor else 0
         self._workers: list[asyncio.Task[None]] = []
         self._running: dict[str, asyncio.Task[None]] = {}
+        self._contexts: dict[str, JobContext] = {}  # running jobs, for send_input()
         self._user_cancelled: set[str] = set()
         self._stopping = False
         self._notifier = notifier
@@ -137,6 +142,8 @@ class JobService:
         ref: str | None = None,
         limits: dict[str, Any] | None = None,
         user_id: str | None = None,
+        interactive: bool = False,
+        ask_permissions: bool = False,
     ) -> Job:
         """Create a queued job owned by `user_id` (None = the owner). Raises PrepareError for a
         bad repo URL or ref."""
@@ -166,6 +173,8 @@ class JobService:
                 ref=ref,
                 limits=limits or {},
                 user_id=user_id,
+                interactive=interactive,
+                ask_permissions=ask_permissions and interactive,
             )
             s.add(job)
             s.commit()
@@ -227,6 +236,14 @@ class JobService:
         else:
             self._queue.put_nowait(job.id)
 
+    async def send_input(self, job_id: str, command: dict[str, Any]) -> bool:
+        """Deliver a command to a running job that takes input (an agent conversation).
+        False if the job isn't running here or doesn't take input (yet)."""
+        ctx = self._contexts.get(job_id)
+        if ctx is None or ctx.on_input is None:
+            return False
+        return await ctx.on_input(command)
+
     def cancel(self, job_id: str) -> bool:
         """Cancel a queued or running job. Returns False if it is unknown or already finished."""
         with session_scope() as s:
@@ -286,6 +303,7 @@ class JobService:
             s.commit()
         self.events.emit(job_id, EventType.STATUS, {"status": JobStatus.RUNNING.value})
         ctx = JobContext(job=job, repo=repo, events=self.events)  # type: ignore[arg-type]
+        self._contexts[job_id] = ctx
         executor = self._remote_executor if remote else self._executors[job.kind]
         timeout = asyncio.timeout(self._timeout_s)
         requeued = False
@@ -325,6 +343,7 @@ class JobService:
             log.exception("job %s failed unexpectedly", job_id)
             self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         finally:
+            self._contexts.pop(job_id, None)
             self._user_cancelled.discard(job_id)
             if not self._stopping and not requeued:
                 self._announce(job_id)

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
+from thinair import doctor
 from thinair.config import get_settings
 from thinair.db.migrate import upgrade
 from thinair.db.session import get_engine
@@ -111,14 +112,40 @@ def test_github_token_is_checked_only_against_github(monkeypatch) -> None:
     calls = []
 
     def fake_get(url, headers, timeout):
-        calls.append(url)
+        calls.append((url, "Authorization" in headers))
         return SimpleNamespace(status_code=401, ok=False)
 
     monkeypatch.setattr(requests, "get", fake_get)
     c = by_name(run_checks(FakeDocker(), online=True))
-    assert calls == ["https://api.github.com/rate_limit"]
+    # The token goes only to the rate-limit check; the update check is anonymous.
+    assert calls == [("https://api.github.com/rate_limit", True), (doctor.RELEASES_URL, False)]
     assert c["GitHub token"].status == "fail" and "rejects" in c["GitHub token"].detail
     assert "A1A1" not in render(list(c.values()))  # the token itself is never printed
+
+
+@pytest.mark.parametrize(
+    ("latest", "status", "says"),
+    [
+        ("v99.0.0", "warn", "v99.0.0 is available"),
+        ("v0.0.1", "ok", "up to date"),
+        ("nightly", "ok", "latest release: nightly"),
+        (None, "ok", "couldn't check"),
+    ],
+)
+def test_version_check(monkeypatch, latest, status, says) -> None:
+    import requests
+
+    def fake_get(url, headers, timeout):
+        if latest is None:
+            raise requests.ConnectionError("offline")
+        return SimpleNamespace(ok=True, json=lambda: {"tag_name": latest})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    c = doctor._version(online=True)
+    assert c.status == status and says in c.detail, c
+    if status == "warn":
+        assert "installer again" in c.fix
+    assert "not checked" in doctor._version(online=False).detail
 
 
 @pytest.mark.parametrize("failing", [True, False])

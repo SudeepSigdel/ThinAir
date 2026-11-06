@@ -5,6 +5,7 @@
 #
 # Server (default): downloads docker-compose.yml into ~/thinair, writes a .env with a fresh
 # admin token (first time only), downloads the ready-made images and starts Thinair.
+# On a fresh Linux machine it offers to install Docker (and Tailscale) first, asking each time.
 # Runner:  ... | sh -s -- --runner   sets up a remote runner in ~/thinair-runner instead.
 # Run it again to upgrade: your .env is kept, the images are updated.
 #
@@ -15,6 +16,8 @@
 #   THINAIR_PHONE     tailscale | domain | skip: how phones reach it (asked on first install)
 #   THINAIR_DOMAIN    your domain, for THINAIR_PHONE=domain
 #   THINAIR_SERVER_URL, THINAIR_RUNNER_TOKEN   runner only; asked for when missing
+#   THINAIR_INSTALL_DOCKER, THINAIR_INSTALL_TAILSCALE, THINAIR_OPEN_FIREWALL   yes | no:
+#                     answer those questions in advance (default: ask; no terminal = no)
 set -eu
 
 RAW_URL="${THINAIR_RAW_URL:-https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main}"
@@ -65,6 +68,97 @@ ask() { # prompt var: read from the terminal even when this script comes through
   eval "$2=\$answer"
 }
 
+confirm() { # question VAR: true if VAR says yes, else ask (no terminal or no answer = no)
+  preset=""
+  eval "preset=\${$2:-}"
+  case "$preset" in
+    y | Y | yes | YES | true | 1) return 0 ;;
+    n | N | no | NO | false | 0) return 1 ;;
+  esac
+  has_tty || return 1
+  reply=""
+  ask "$1 [y/N] " reply
+  case "$reply" in y | Y | yes | YES) return 0 ;; *) return 1 ;; esac
+}
+
+as_root() { # run a command as root (directly, or through sudo)
+  if [ "$(id -u)" = 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    die "This step needs root and sudo is not installed: $*"
+  fi
+}
+
+on_oracle_cloud() { # Oracle Cloud sets this asset tag on every instance (cloud-init uses it too)
+  grep -qs OracleCloud.com /sys/class/dmi/id/chassis_asset_tag
+}
+
+install_docker() {
+  [ "$(uname -s)" = Linux ] ||
+    die "Docker is not installed. Install Docker Desktop (https://docs.docker.com/get-docker/) and run this again."
+  say "Docker is not installed on this machine."
+  confirm "Install it now with Docker's official script (https://get.docker.com)?" THINAIR_INSTALL_DOCKER ||
+    die "Install Docker (https://docs.docker.com/engine/install/) and run this again."
+  tmp="$(mktemp)"
+  fetch https://get.docker.com "$tmp" || die "Could not download Docker's install script."
+  as_root sh "$tmp" || die "Docker's install script failed (see above)."
+  rm -f "$tmp"
+  if [ "$(id -u)" != 0 ]; then
+    as_root usermod -aG docker "$(id -un)" ||
+      say "Could not add you to the docker group; use sudo for docker commands."
+  fi
+}
+
+use_sudo_for_docker() { # this run only: you're in the docker group from your next login on
+  # The function shadows the docker command; sudo runs the real binary (that's the point).
+  # shellcheck disable=SC2032,SC2033,SC2317
+  docker() { sudo docker "$@"; }
+  say "Using sudo for Docker during this install. Log out and back in to use docker without sudo."
+}
+
+install_tailscale() {
+  [ "$(uname -s)" = Linux ] ||
+    die "Tailscale is not installed here. Install it (https://tailscale.com/download), sign in, then run this again."
+  confirm "Tailscale is not installed. Install it now with its official script (https://tailscale.com/install.sh)?" THINAIR_INSTALL_TAILSCALE ||
+    die "Install Tailscale (https://tailscale.com/download), run 'sudo tailscale up', then run this again."
+  tmp="$(mktemp)"
+  fetch https://tailscale.com/install.sh "$tmp" || die "Could not download Tailscale's install script."
+  as_root sh "$tmp" || die "Tailscale's install script failed (see above)."
+  rm -f "$tmp"
+}
+
+oracle_firewall() { # Oracle Cloud blocks 80/443 twice: in its console and on the machine itself
+  on_oracle_cloud || return 0
+  say ""
+  say "This is an Oracle Cloud machine. Ports 80 and 443 are blocked in two places:"
+  say "  1. Oracle's console: Networking > Virtual cloud networks > (your network) > Security"
+  say "     Lists > Default Security List > Add Ingress Rules: source 0.0.0.0/0, TCP, port 80;"
+  say "     then the same for port 443. Only you can do this one."
+  say "  2. This machine's own firewall."
+  if confirm "Open ports 80 and 443 in this machine's firewall now?" THINAIR_OPEN_FIREWALL; then
+    if command -v firewall-cmd >/dev/null 2>&1; then # Oracle Linux
+      as_root firewall-cmd --permanent --add-service=http --add-service=https &&
+        as_root firewall-cmd --reload
+    elif command -v iptables >/dev/null 2>&1; then # Oracle's Ubuntu images
+      for p in 443 80; do
+        as_root iptables -C INPUT -p tcp --dport "$p" -m state --state NEW -j ACCEPT 2>/dev/null ||
+          as_root iptables -I INPUT 1 -p tcp --dport "$p" -m state --state NEW -j ACCEPT
+      done
+      if command -v netfilter-persistent >/dev/null 2>&1; then
+        as_root netfilter-persistent save
+      else
+        say "Opened until the next reboot (netfilter-persistent is not installed to keep it)."
+      fi
+    else
+      say "No firewall tool found here; nothing to change on this machine."
+    fi
+  else
+    say "Skipped. Without both steps phones can't reach Thinair through your domain."
+  fi
+}
+
 set_env() { # KEY VALUE: set one line in .env, keeping everything else
   { grep -v "^$1=" .env || true; } >.env.tmp
   printf '%s=%s\n' "$1" "$2" >>.env.tmp
@@ -83,10 +177,11 @@ wait_healthy() {
 
 # ---- phone access: HTTPS through Tailscale or your own domain -------------------------------
 setup_tailscale() { # port
-  command -v tailscale >/dev/null 2>&1 ||
-    die "Tailscale is not installed here. Install it (https://tailscale.com/download), run 'tailscale up', then run this again."
-  tailscale status >/dev/null 2>&1 ||
-    die "Tailscale is installed but not connected. Run 'tailscale up' first."
+  command -v tailscale >/dev/null 2>&1 || install_tailscale
+  if ! tailscale status >/dev/null 2>&1; then
+    say "Connecting this machine to your tailnet: open the link below and sign in."
+    as_root tailscale up || die "Tailscale is installed but not connected. Run 'sudo tailscale up' first."
+  fi
   # CertDomains is filled in only when HTTPS certificates are enabled for the tailnet.
   host="$(tailscale status --json | docker compose exec -T thinair python -c \
     "import json,sys; print((json.load(sys.stdin).get('CertDomains') or [''])[0])")"
@@ -95,7 +190,9 @@ setup_tailscale() { # port
     say "https://login.tailscale.com/admin/dns, then run this again with THINAIR_PHONE=tailscale."
     return 0
   fi
-  if ! tailscale serve --bg --https=443 "http://127.0.0.1:$1"; then
+  # Changing serve settings needs root (or a Tailscale operator), so ask through sudo if needed.
+  if ! tailscale serve --bg --https=443 "http://127.0.0.1:$1" 2>/dev/null &&
+    ! as_root tailscale serve --bg --https=443 "http://127.0.0.1:$1"; then
     say "'tailscale serve' failed. Try: tailscale serve --bg --https=443 http://127.0.0.1:$1"
     return 0
   fi
@@ -112,6 +209,7 @@ setup_domain() {
   set_env THINAIR_PUBLIC_URL "https://$domain"
   set_env COMPOSE_PROFILES https # so every later 'docker compose up' starts Caddy too
   say "Caddy will get a certificate for $domain. Ports 80 and 443 must be open to the internet."
+  oracle_firewall
 }
 
 phone_access() { # port
@@ -120,7 +218,11 @@ phone_access() { # port
     has_tty || return 0
     say ""
     say "How will you open Thinair from your phone? (installing the app needs HTTPS)"
-    say "  1) Tailscale (private, no open ports; Tailscale must be installed here)"
+    if on_oracle_cloud; then
+      say "  1) Tailscale (private, no open ports; recommended on Oracle Cloud: no firewall changes)"
+    else
+      say "  1) Tailscale (private, no open ports; it can be installed for you)"
+    fi
     say "  2) My own domain (Caddy gets a certificate; ports 80 and 443 must be open)"
     say "  3) Skip for now"
     ask "Choose 1, 2 or 3 [3]: " choice
@@ -144,15 +246,19 @@ random_token() { # like `thinair init`: thinair_ + 32 random bytes, URL-safe bas
 main() {
 # ---- checks -----------------------------------------------------------------------------------
 step "Checking Docker"
-command -v docker >/dev/null 2>&1 ||
-  die "Docker is not installed. Install it from https://docs.docker.com/engine/install/ and run this again."
-docker compose version >/dev/null 2>&1 ||
-  die "The Docker Compose plugin is missing. See https://docs.docker.com/compose/install/linux/"
+command -v docker >/dev/null 2>&1 || install_docker
 if ! docker info >/dev/null 2>&1; then
-  die "Docker is installed but not reachable. Is it running? On Linux either run this with sudo, or
+  # shellcheck disable=SC2033 # the real docker binary, through sudo
+  if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    use_sudo_for_docker
+  else
+    die "Docker is installed but not reachable. Is it running? On Linux either run this with sudo, or
 add yourself to the docker group (sudo usermod -aG docker \"\$USER\"), log out and back in, and
 run this again."
+  fi
 fi
+docker compose version >/dev/null 2>&1 ||
+  die "The Docker Compose plugin is missing. See https://docs.docker.com/compose/install/linux/"
 say "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), $(docker compose version --short 2>/dev/null || echo 'compose')"
 
 if [ "$MODE" = runner ]; then

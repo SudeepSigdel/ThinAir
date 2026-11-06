@@ -87,7 +87,14 @@ def test_driver_never_approves_without_an_allow_option(tmp_path) -> None:
     assert next(r for r in received if "perm_reply" in r)["perm_reply"]["result"] == {
         "outcome": {"outcome": "cancelled"}
     }
-    assert {"acp": "permission", "title": "Run npm test", "allowed": False} in events
+    perm = next(e for e in events if e.get("acp") == "permission")
+    assert perm == {
+        "acp": "permission",
+        "title": "Run npm test",
+        "allowed": False,
+        "option": None,
+        "by": "auto",
+    }
 
 
 @needs_node
@@ -177,3 +184,114 @@ def test_builtin_acp_agents_share_their_cli_logins() -> None:
     assert agents["claude-acp"].egress == agents["claude"].egress
     assert auth_volume_name(agents["claude-acp"].login_id, None) == "thinair-auth-claude"
     assert isinstance(agents["claude"], AgentConfig) and agents["claude"].login_id == "claude"
+
+
+# ---- conversations: replies and approvals over the driver's stdin ---------------------------
+def converse(tmp_path: Path, answer, *, approval: str = "ask", idle: str = "20"):
+    """Run the driver in conversation mode; `answer(event)` returns a command (or None) for
+    each event the driver prints. Returns (exit code, events, agent log)."""
+    import os
+
+    log = tmp_path / "chat.jsonl"
+    env = {
+        **os.environ,
+        "THINAIR_ACP_INTERACTIVE": "1",
+        "THINAIR_ACP_APPROVAL": approval,
+        "THINAIR_ACP_IDLE_S": idle,
+    }
+    proc = subprocess.Popen(  # noqa: S603
+        [NODE, "-e", ACP_DRIVER, "--", "first", sys.executable, str(FAKE), "chat", str(log)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    events = []
+    assert proc.stdout is not None and proc.stdin is not None
+    for line in proc.stdout:
+        ev = json.loads(line)
+        events.append(ev)
+        cmd = answer(ev)
+        if cmd is not None:
+            proc.stdin.write(json.dumps(cmd) + "\n")
+            proc.stdin.flush()
+    code = proc.wait(timeout=60)
+    received = [json.loads(ln) for ln in log.read_text().splitlines()]
+    return code, events, received
+
+
+@needs_node
+def test_conversation_asks_for_approval_and_takes_more_messages(tmp_path) -> None:
+    waits = []
+
+    def answer(ev):
+        if ev["acp"] == "permission_request":
+            # approve the first request, deny the second
+            option = "yes" if ev["request"] == 1 else None
+            return {"type": "permission", "request": ev["request"], "option": option}
+        if ev["acp"] == "waiting":
+            waits.append(ev)
+            return (
+                {"type": "message", "text": "also README"} if len(waits) == 1 else {"type": "end"}
+            )
+        return None
+
+    code, events, received = converse(tmp_path, answer)
+    assert code == 0, events
+    reqs = [e for e in events if e["acp"] == "permission_request"]
+    assert [r["request"] for r in reqs] == [1, 2]
+    assert reqs[0]["options"] == [
+        {"id": "no", "name": "Reject", "kind": "reject_once"},
+        {"id": "yes", "name": "Allow once", "kind": "allow_once"},
+    ]
+    first = next(r for r in received if "perm_reply" in r and "turn" not in r)
+    assert first["perm_reply"]["result"] == {"outcome": {"outcome": "selected", "optionId": "yes"}}
+    second = next(r for r in received if r.get("turn") == 2)
+    assert second["text"] == "also README"
+    assert second["perm_reply"]["result"] == {"outcome": {"outcome": "cancelled"}}
+    assert {"acp": "user", "text": "also README"} in events
+    decided = [e for e in events if e["acp"] == "permission"]
+    assert [(d["allowed"], d["by"]) for d in decided] == [(True, "you"), (False, "you")]
+    assert events[-1] == {"acp": "ended", "reason": "you ended the conversation"}
+
+    p = StreamParser("acp")
+    parsed = [e for ev in events for e in p.feed(json.dumps(ev))] + p.finish()
+    kinds = [e.kind for e in parsed]
+    assert kinds.count("permission_request") == 2 and kinds.count("waiting") == 2
+    assert [e.text for e in parsed if e.kind == "permission"] == [
+        "Run npm test: Allow once",
+        "Edit also README: denied",
+    ]
+    assert parsed[[e.kind for e in parsed].index("permission_request")].data["request"] == 1
+    assert any(e.kind == "user" and e.text == "also README" for e in parsed)
+
+
+@needs_node
+def test_conversation_ends_by_itself_when_nobody_answers(tmp_path) -> None:
+    code, events, _ = converse(tmp_path, lambda ev: None, idle="1")
+    assert code == 0, events
+    decided = next(e for e in events if e["acp"] == "permission")
+    assert decided["by"] == "timeout" and decided["allowed"] is False  # unanswered = not allowed
+    assert events[-1] == {"acp": "ended", "reason": "no reply in time"}
+
+
+@needs_node
+def test_conversation_with_auto_approval_and_a_queued_message(tmp_path) -> None:
+    sent = []
+
+    def answer(ev):
+        if ev["acp"] == "started" and not sent:  # sent while the first turn is still running
+            sent.append(1)
+            return {"type": "message", "text": "queued"}
+        if ev["acp"] == "waiting" and len(sent) == 1:
+            sent.append(2)
+            return None  # the queued message is picked up without waiting
+        if ev["acp"] == "waiting":
+            return {"type": "end"}
+        return None
+
+    code, events, received = converse(tmp_path, answer, approval="auto")
+    assert code == 0, events
+    assert not [e for e in events if e["acp"] == "permission_request"]  # never asked
+    assert next(r for r in received if r.get("turn") == 2)["text"] == "queued"

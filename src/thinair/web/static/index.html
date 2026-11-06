@@ -40,31 +40,21 @@
       </form>
     </section>
 
-    <!-- Home: new job + recent jobs -->
+    <!-- Home: projects + recent jobs -->
     <section id="view-home" hidden>
-      <div class="tabs" role="tablist">
-        <button type="button" id="mode-profile" class="tab" role="tab" aria-selected="true">Resource profile</button>
-        <button type="button" id="mode-agent" class="tab" role="tab" aria-selected="false">Agent task</button>
+      <div class="row">
+        <h1>Projects</h1>
       </div>
-      <p id="mode-help" class="muted">Finds the smallest CPU and memory your project's tests pass with.</p>
-      <form id="job-form">
-        <label for="repo-url">GitHub URL</label>
-        <input id="repo-url" name="repo_url" type="url" required inputmode="url"
-               placeholder="https://github.com/owner/repo" autocapitalize="off" spellcheck="false">
-        <div id="agent-fields" hidden>
-          <label for="agent">Agent</label>
-          <select id="agent" name="agent_id"></select>
-          <label for="task">Task</label>
-          <textarea id="task" name="task" rows="4" maxlength="10000"
-                    placeholder="Fix the failing tests"></textarea>
+      <ul id="repos" class="jobs"></ul>
+      <p id="repos-empty" class="muted" hidden>No projects yet. Add a GitHub repository to start.</p>
+      <form id="add-repo-form" class="inline-form" autocomplete="off">
+        <label for="repo-url">Add a project</label>
+        <div class="inline">
+          <input id="repo-url" name="url" type="url" required inputmode="url"
+                 placeholder="https://github.com/owner/repo" autocapitalize="off" spellcheck="false">
+          <button type="submit" id="add-repo">Add</button>
         </div>
-        <details>
-          <summary>Branch or tag (optional)</summary>
-          <input id="repo-ref" name="ref" type="text" placeholder="main" autocapitalize="off"
-                 spellcheck="false">
-        </details>
-        <button type="submit" id="submit-job">Start profile</button>
-        <p class="error" id="job-error" role="alert" hidden></p>
+        <p class="error" id="repo-error" role="alert" hidden></p>
       </form>
 
       <div class="row">
@@ -75,9 +65,64 @@
       <p id="jobs-empty" class="muted" hidden>No jobs yet.</p>
     </section>
 
+    <!-- One project: new job + its jobs + settings -->
+    <section id="view-repo" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <div class="job-head">
+        <h1 id="repo-title"></h1>
+      </div>
+      <p class="muted"><a id="repo-link" rel="noopener noreferrer" target="_blank"></a></p>
+      <div class="tabs" role="tablist">
+        <button type="button" id="mode-agent" class="tab" role="tab" aria-selected="true">Agent task</button>
+        <button type="button" id="mode-profile" class="tab" role="tab" aria-selected="false">Resource profile</button>
+      </div>
+      <p id="mode-help" class="muted"></p>
+      <form id="job-form">
+        <div id="agent-fields">
+          <label for="task">Task</label>
+          <textarea id="task" name="task" rows="4" maxlength="10000"
+                    placeholder="Fix the failing tests"></textarea>
+          <label for="agent">Agent</label>
+          <select id="agent" name="agent_id"></select>
+          <label class="check"><input type="checkbox" id="opt-chat"> Keep the conversation open
+            <small class="muted" id="opt-chat-help">Reply to the agent while it works.</small></label>
+          <label class="check"><input type="checkbox" id="opt-ask"> Ask me before it acts
+            <small class="muted">Approve commands and file edits from here.</small></label>
+        </div>
+        <details id="ref-box">
+          <summary>Branch or tag (optional)</summary>
+          <input id="repo-ref" name="ref" type="text" placeholder="default branch" autocapitalize="off"
+                 spellcheck="false">
+        </details>
+        <button type="submit" id="submit-job">Start agent</button>
+        <p class="error" id="job-error" role="alert" hidden></p>
+      </form>
+
+      <div class="row">
+        <h2>Jobs</h2>
+      </div>
+      <ul id="repo-jobs" class="jobs"></ul>
+      <p id="repo-jobs-empty" class="muted" hidden>No jobs on this project yet.</p>
+
+      <details id="repo-settings" hidden>
+        <summary>Project defaults</summary>
+        <p class="muted">Used for everyone's new jobs on this project when they don't pick.</p>
+        <form id="repo-settings-form">
+          <label for="default-agent">Agent</label>
+          <select id="default-agent" name="default_agent_id"></select>
+          <label for="default-ref">Branch or tag</label>
+          <input id="default-ref" name="default_ref" type="text" placeholder="default branch"
+                 autocapitalize="off" spellcheck="false">
+          <button type="submit">Save defaults</button>
+          <p class="muted" id="settings-saved" role="status" hidden>Saved.</p>
+          <p class="error" id="settings-error" role="alert" hidden></p>
+        </form>
+      </details>
+    </section>
+
     <!-- One job: status, live log, report -->
     <section id="view-job" hidden>
-      <a href="#/" class="back">‹ All jobs</a>
+      <a href="#/" id="job-back" class="back">‹ Projects</a>
       <div class="job-head">
         <h1 id="job-title"></h1>
         <span id="job-status" class="chip"></span>
@@ -98,6 +143,17 @@
         <h2>Agent activity</h2>
         <ul id="agent-msgs" class="msgs"></ul>
         <p id="agent-empty" class="muted">Waiting for the agent…</p>
+        <form id="reply-form" class="composer" hidden autocomplete="off">
+          <p id="agent-state" class="muted" role="status">The agent is working…</p>
+          <label for="reply" class="visually-hidden">Message to the agent</label>
+          <textarea id="reply" rows="2" maxlength="10000" placeholder="Reply to the agent"></textarea>
+          <div class="composer-actions">
+            <button type="submit" id="send-reply">Send</button>
+            <button type="button" id="stop-turn" class="secondary">Stop this step</button>
+            <button type="button" id="end-chat" class="secondary">Finish</button>
+          </div>
+          <p class="error" id="reply-error" role="alert" hidden></p>
+        </form>
       </div>
 
       <div id="runs-box">

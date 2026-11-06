@@ -282,8 +282,8 @@ async def test_executors_use_the_owners_login_volume_keys_and_github_policy(
     class Prepared:
         volume, commit_sha = "ws", "a" * 40
 
-    async def fake_prepare(_mgr, _src, _job_id, _log, *, github_auth):
-        seen["github_auth"] = github_auth
+    async def fake_prepare(_mgr, _src, _job_id, _log, *, github_auth, cache_scope):
+        seen["github_auth"], seen["cache_scope"] = github_auth, cache_scope
         return Prepared()
 
     class FakeAdapter:
@@ -314,8 +314,14 @@ async def test_executors_use_the_owners_login_volume_keys_and_github_policy(
         assert seen["auth_volume"] == "thinair-auth-claude.bob"
         assert seen["host_env"] == {}  # the owner's API keys stay with the owner
         assert seen["github_auth"] is for_members
+        assert seen["cache_scope"] == "bob"  # their own dependency cache, never the owner's
     else:
-        assert seen == {"github_auth": True, "host_env": None, "auth_volume": "thinair-auth-claude"}
+        assert seen == {
+            "github_auth": True,
+            "cache_scope": "admin",
+            "host_env": None,
+            "auth_volume": "thinair-auth-claude",
+        }
 
 
 def test_member_login_hint_names_their_user(monkeypatch) -> None:

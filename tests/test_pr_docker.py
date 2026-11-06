@@ -87,7 +87,7 @@ async def test_agent_patch_applies_to_a_fresh_copy_byte_for_byte(mgr, volumes, m
     prepared.commit_sha = sha
     res, out = await mgr.run_capture(
         pr.SandboxSpec(
-            image="thinair-sandbox-python:1",
+            image="thinair-sandbox-python:2",
             command=["sh", "-c", "echo generated > gen.lock"],
             job_id=JOB,
             mounts=[pr.VolumeMount(volume=prepared.volume, path="/workspace")],

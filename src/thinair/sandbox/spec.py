@@ -66,6 +66,9 @@ class SandboxSpec(BaseModel):
     # Join this Thinair-made internal network instead (egress via the job's allowlist proxy).
     network_name: str | None = None
     read_only_rootfs: bool = True  # writable paths: mounted volumes and /tmp
+    # Keep stdin open so Thinair can send lines to the process (agent conversations). Only
+    # Thinair writes to it, through a `StdinPipe`; nothing else is attached.
+    stdin: bool = False
     tmpfs_tmp_bytes: int = 256 * 1024**2
     # /tmp is noexec by default; the install phase turns this off (installers may run helpers).
     tmp_noexec: bool = True

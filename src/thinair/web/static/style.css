@@ -150,3 +150,27 @@ pre.diff .meta { color: #e5e7eb; font-weight: 700; }
 
 .pr { margin-top: 1.5rem; }
 .pr .actions { align-items: center; }
+
+/* ---- projects ---- */
+.inline-form { margin: 0.6rem 0 1.4rem; }
+.inline { display: flex; gap: 8px; align-items: stretch; }
+.inline input { flex: 1; min-width: 0; margin: 0; }
+.inline button { width: auto; margin: 0; flex: none; }
+#repo-link { overflow-wrap: anywhere; }
+#repo-settings { margin-top: 1.4rem; }
+
+/* ---- conversations ---- */
+label.check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 10px 0 0; font-weight: 400; }
+label.check input { width: auto; margin: 0; }
+label.check small { flex-basis: 100%; padding-left: 26px; }
+.msgs li.user { align-self: flex-end; background: var(--accent); color: var(--accent-fg); border-radius: 14px 14px 4px 14px; padding: 8px 12px; margin: 8px 0 8px 15%; border: 0; }
+.msgs li.ask { background: var(--card); border: 1px solid var(--warn); border-radius: 12px; padding: 10px 12px; margin: 8px 0; display: grid; gap: 6px; }
+.msgs li.ask.answered { border-color: var(--line); color: var(--muted); font-size: 0.9rem; }
+.ask-title { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.ask-actions, .composer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ask-actions button, .composer-actions button { width: auto; flex: 1 1 auto; margin: 0; }
+button.secondary { background: var(--line); color: var(--fg); }
+.composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 12px; border-top: 1px solid var(--line); margin-top: 8px; }
+.composer textarea { margin: 6px 0 8px; }
+.attention { color: var(--warn); font-weight: 600; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
