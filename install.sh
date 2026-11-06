@@ -12,6 +12,8 @@
 #   THINAIR_DIR       install folder           (default ~/thinair, runner: ~/thinair-runner)
 #   THINAIR_PORT      port on this machine     (default 8080; first install only)
 #   THINAIR_VERSION   image tag                (default latest; e.g. 0.2.0 or edge)
+#   THINAIR_PHONE     tailscale | domain | skip: how phones reach it (asked on first install)
+#   THINAIR_DOMAIN    your domain, for THINAIR_PHONE=domain
 #   THINAIR_SERVER_URL, THINAIR_RUNNER_TOKEN   runner only; asked for when missing
 set -eu
 
@@ -57,6 +59,76 @@ ask() { # prompt var: read from the terminal even when this script comes through
   # shellcheck disable=SC2034 # used through eval below
   IFS= read -r answer </dev/tty || die "Set $2."
   eval "$2=\$answer"
+}
+
+set_env() { # KEY VALUE: set one line in .env, keeping everything else
+  { grep -v "^$1=" .env || true; } >.env.tmp
+  printf '%s=%s\n' "$1" "$2" >>.env.tmp
+  mv .env.tmp .env
+}
+
+wait_healthy() {
+  i=0
+  until docker compose exec -T thinair python -c \
+    "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz')" >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -le 45 ] || die "Thinair did not come up. See: cd $DIR && docker compose logs thinair"
+    sleep 2
+  done
+}
+
+# ---- phone access: HTTPS through Tailscale or your own domain -------------------------------
+setup_tailscale() { # port
+  command -v tailscale >/dev/null 2>&1 ||
+    die "Tailscale is not installed here. Install it (https://tailscale.com/download), run 'tailscale up', then run this again."
+  tailscale status >/dev/null 2>&1 ||
+    die "Tailscale is installed but not connected. Run 'tailscale up' first."
+  # CertDomains is filled in only when HTTPS certificates are enabled for the tailnet.
+  host="$(tailscale status --json | docker compose exec -T thinair python -c \
+    "import json,sys; print((json.load(sys.stdin).get('CertDomains') or [''])[0])")"
+  if [ -z "$host" ]; then
+    say "HTTPS certificates are off for your tailnet. Turn on 'HTTPS Certificates' at"
+    say "https://login.tailscale.com/admin/dns, then run this again with THINAIR_PHONE=tailscale."
+    return 0
+  fi
+  if ! tailscale serve --bg --https=443 "http://127.0.0.1:$1"; then
+    say "'tailscale serve' failed. Try: tailscale serve --bg --https=443 http://127.0.0.1:$1"
+    return 0
+  fi
+  set_env THINAIR_PUBLIC_URL "https://$host"
+  say "Phones on your tailnet can open https://$host"
+}
+
+setup_domain() {
+  domain="${THINAIR_DOMAIN:-}"
+  [ -n "$domain" ] || ask "Your domain for Thinair (its DNS must point at this machine): " domain
+  printf '%s' "$domain" | grep -Eq '^([A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,63}$|^localhost$' ||
+    die "That doesn't look like a domain name: $domain"
+  set_env THINAIR_DOMAIN "$domain"
+  set_env THINAIR_PUBLIC_URL "https://$domain"
+  set_env COMPOSE_PROFILES https # so every later 'docker compose up' starts Caddy too
+  say "Caddy will get a certificate for $domain. Ports 80 and 443 must be open to the internet."
+}
+
+phone_access() { # port
+  choice="${THINAIR_PHONE:-}"
+  if [ -z "$choice" ]; then
+    [ -r /dev/tty ] || return 0
+    say ""
+    say "How will you open Thinair from your phone? (installing the app needs HTTPS)"
+    say "  1) Tailscale (private, no open ports; Tailscale must be installed here)"
+    say "  2) My own domain (Caddy gets a certificate; ports 80 and 443 must be open)"
+    say "  3) Skip for now"
+    ask "Choose 1, 2 or 3 [3]: " choice
+  fi
+  case "$choice" in
+    1 | tailscale) step "Setting up Tailscale HTTPS" && setup_tailscale "$1" ;;
+    2 | domain) step "Setting up HTTPS for your domain" && setup_domain ;;
+    "" | 3 | skip) return 0 ;;
+    *) die "Unknown choice: $choice (tailscale, domain or skip)" ;;
+  esac
+  docker compose up -d --remove-orphans # picks up the new settings
+  wait_healthy
 }
 
 random_token() { # like `thinair init`: thinair_ + 32 random bytes, URL-safe base64
@@ -167,13 +239,12 @@ if [ "$MODE" = runner ]; then
   exit 0
 fi
 
-i=0
-until docker compose exec -T thinair python -c \
-  "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz')" >/dev/null 2>&1; do
-  i=$((i + 1))
-  [ "$i" -le 45 ] || die "Thinair did not come up. See: cd $DIR && docker compose logs thinair"
-  sleep 2
-done
+wait_healthy
+port="$(sed -n 's/^THINAIR_PORT=//p' .env | tail -n 1)"
+# Asked on the first install only (or whenever THINAIR_PHONE is given).
+if [ -n "$NEW_TOKEN" ] || [ -n "${THINAIR_PHONE:-}" ]; then
+  phone_access "${port:-8080}"
+fi
 
 # Older images (pinned with THINAIR_VERSION) may not have these commands: then skip them.
 if docker compose exec -T thinair thinair images --help >/dev/null 2>&1; then
@@ -186,12 +257,13 @@ if docker compose exec -T thinair thinair doctor --help >/dev/null 2>&1; then
   docker compose exec -T thinair thinair doctor || true
 fi
 
-port="$(sed -n 's/^THINAIR_PORT=//p' .env | tail -n 1)"
 bind="$(sed -n 's/^THINAIR_BIND=//p' .env | tail -n 1)"
+public="$(sed -n 's/^THINAIR_PUBLIC_URL=//p' .env | tail -n 1)"
 say ""
 say "Thinair is running."
 say ""
 say "  Open:      http://localhost:${port:-8080}   (on this machine)"
+[ -z "$public" ] || say "  Phone:     $public"
 if [ -n "$NEW_TOKEN" ]; then
   say "  Token:     $NEW_TOKEN"
   say "             (log in with it; it is also saved in $DIR/.env)"
@@ -200,7 +272,7 @@ else
 fi
 say ""
 say "Next steps:"
-if [ "${bind:-127.0.0.1}" = 127.0.0.1 ]; then
+if [ -z "$public" ] && [ "${bind:-127.0.0.1}" = 127.0.0.1 ]; then
   say "  - Phone access: a tunnel (Tailscale or Cloudflare) to http://localhost:${port:-8080}, or your"
   say "    own domain: THINAIR_DOMAIN=... in .env, then: docker compose --profile https up -d"
   say "    Details: https://github.com/SudeepSigdel/ThinAir#using-it-from-your-phone"

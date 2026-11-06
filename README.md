@@ -38,8 +38,9 @@ curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.s
 
 The installer puts everything in `~/thinair`, creates your login token, starts Thinair from
 ready-made images (nothing is built on your machine), prepares the sandbox images so the first job
-starts right away, and runs `thinair doctor` to check the setup. At the end it prints the address
-and the token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
+starts right away, and runs `thinair doctor` to check the setup. On the first install it asks how
+you'll open Thinair from your phone (Tailscale, your own domain, or later) and sets up HTTPS for
+it. At the end it prints the address and the token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
 later to upgrade; your settings are kept. You can read the script first:
 `curl -fsSL .../install.sh -o install.sh && less install.sh && sh install.sh`.
 
@@ -66,7 +67,14 @@ Copy the token from the log (it is shown only once). To pin a version, set `THIN
 
 ### Using it from your phone
 
-By default Thinair listens only on `127.0.0.1`. Pick one way to reach it:
+By default Thinair listens only on `127.0.0.1`. The installer can set up either of these for you.
+Later, run it again with `THINAIR_PHONE=tailscale` or `THINAIR_PHONE=domain THINAIR_DOMAIN=...`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | THINAIR_PHONE=tailscale sh
+```
+
+By hand:
 
 - **A tunnel (easiest):** [Tailscale](https://tailscale.com/), or a
   [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)

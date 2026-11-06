@@ -293,6 +293,11 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   ~/thinair-runner, `.env.runner` from env or prompts on /dev/tty, https required. `THINAIR_RAW_URL=file:///repo`
   for offline installs and tests. Tested in `docker:cli` (busybox ash) with the repo mounted read-only, against a
   locally tagged image: fresh install, re-run/upgrade, runner mode, input checks, a real profile job.
+  Phone step (first install, or `THINAIR_PHONE=tailscale|domain|skip`): Tailscale = `tailscale serve --bg --https=443
+  http://127.0.0.1:<port>` (docs: port forwarding needs no root); URL from `tailscale status --json` `CertDomains[0]`,
+  which is EMPTY when the tailnet has HTTPS certificates off (verified in ipnstate.go) -> tell the user, change nothing.
+  Domain = THINAIR_DOMAIN + THINAIR_PUBLIC_URL + `COMPOSE_PROFILES=https` in .env (so plain `up` keeps Caddy). Tested
+  with a fake tailscale CLI and with Caddy on `localhost` (internal CA, no ACME traffic).
   After startup it runs `thinair images` (builds python/node/git sandbox images; deliberately NOT published
   prebuilt: they are base image + one user layer, so the download is the cost either way) and `thinair doctor`.
 - `thinair doctor` (`src/thinair/doctor.py`): read-only checks -> `Check(status, name, detail, fix)`, exit 1 on any
