@@ -37,11 +37,20 @@ agents) inside Docker containers.
   owner's jobs, and the server's GitHub token is not used for members' jobs unless
   `THINAIR_GITHUB_TOKEN_FOR_MEMBERS=true`. Disabling a user revokes all their tokens.
 
+- Remote runners connect out to the server with their own secret (hashed like API tokens, not
+  usable on the API) and only ever get profile jobs: a repository URL, a ref and a yes/no for
+  using a GitHub token. They never receive the server's GitHub token, agent logins, API keys or
+  other users' data. Their messages are size-capped and validated, and a runner can only report
+  on jobs it currently holds.
+
 **Not protected (know these before you deploy)**
 
 - **Users are not isolated from each other at the machine level.** All jobs share one Docker
   host, so a member who escapes a sandbox can reach everyone's data. Only add people you would
   trust with a shell on the machine.
+- **A runner's results are trusted.** A compromised runner can report wrong profiles and log
+  lines for the jobs it claims. Only register machines you control, and disable one
+  (`thinair runner disable <name>`) if in doubt.
 - **Docker isolation is not a hard security boundary** against kernel exploits. For stronger
   isolation run sandboxes under gVisor (`runsc`) or in a VM. Dedicate the machine to Thinair.
 - **Anything that can create containers is powerful.** The socket proxy narrows the API, but a

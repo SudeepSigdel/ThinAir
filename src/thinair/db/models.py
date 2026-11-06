@@ -61,6 +61,19 @@ class User(SQLModel, table=True):
     disabled_at: datetime | None = None
 
 
+class Runner(SQLModel, table=True):
+    """Another machine that runs profile jobs for this server. It connects *to* the server with
+    its own secret (only the SHA-256 is stored, like API tokens)."""
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    token_hash: str = Field(index=True, unique=True)
+    info: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # cpus, memory
+    created_at: datetime = Field(default_factory=utcnow)
+    last_seen_at: datetime | None = None
+    disabled_at: datetime | None = None
+
+
 class Repo(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     url: str = Field(index=True, unique=True)
@@ -82,6 +95,8 @@ class Job(SQLModel, table=True):
     parent_job_id: str | None = Field(default=None, foreign_key="job.id", index=True)
     # Who the job belongs to (and acts as: agent login, GitHub token policy). None = the owner.
     user_id: str | None = Field(default=None, foreign_key="user.id", index=True)
+    # The remote runner that ran this job (None = this server).
+    runner_id: str | None = Field(default=None, foreign_key="runner.id", index=True)
     limits: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     error_code: str | None = None
     error_message: str | None = None

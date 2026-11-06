@@ -152,6 +152,21 @@ docker compose exec thinair thinair auth claude --user alice --print-command
 - Everyone shares the same job queue and machine limits, and Telegram notifications for every
   job go to the owner's chat.
 
+## Remote runners
+
+Let a bigger machine (say, a computer at home) run the profile jobs while the small server only
+takes requests. The runner connects out to the server, so it needs no open port:
+
+```sh
+docker compose exec thinair thinair runner add homebox     # on the server: prints a secret
+# on the runner machine: put THINAIR_SERVER_URL and THINAIR_RUNNER_TOKEN in .env.runner, then
+docker compose -f docker-compose.runner.yml up -d
+```
+
+By default (`THINAIR_RUNNER_PLACEMENT=auto`) a profile job goes to a runner when one is free and
+runs on the server otherwise. Runners only ever get profile jobs. They never receive the
+server's GitHub token, agent logins or API keys. See [docs/runners.md](docs/runners.md).
+
 ## Notifications (Telegram)
 
 Get a message when a job finishes, with a link back to it:
@@ -217,6 +232,8 @@ thinair auth <agent> [--check]   log an agent in (interactive), or check its log
 thinair agents                   list agent configs (and report broken ones)
 thinair token create|list|revoke manage API tokens (--user NAME for someone else's)
 thinair user add|list|disable    manage users (see "Several users")
+thinair runner add|list|disable  manage remote runners (on the server)
+thinair runner start             run profile jobs for a server (on the runner machine)
 ```
 
 The HTTP API is documented at `/docs` on your server (log in there with the same token).
@@ -307,7 +324,8 @@ runs. Memory limits are set on every service. Measured numbers are in
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
   notifications, Codex CLI and Gemini CLI configs (all done).
 - **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done),
-  multiple users (done), Agent Client Protocol (ACP) adapter (done), remote runners.
+  multiple users (done), Agent Client Protocol (ACP) adapter (done), remote runners (done,
+  profile jobs).
 
 ## Contributing
 

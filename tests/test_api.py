@@ -127,6 +127,12 @@ ROUTES = [
     ("POST", "/api/users"),
     ("POST", "/api/users/x/tokens"),
     ("POST", "/api/users/x/disable"),
+    ("GET", "/api/runners"),
+    ("POST", "/api/runners"),
+    ("POST", "/api/runners/x/disable"),
+    ("POST", "/runner/v1/claim"),
+    ("POST", "/runner/v1/jobs/x/events"),
+    ("POST", "/runner/v1/jobs/x/finish"),
 ]
 
 

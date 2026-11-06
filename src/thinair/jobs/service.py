@@ -58,7 +58,13 @@ class JobService:
         job_timeout_s: float = 3600,
         sweep_on_start: bool = True,
         notifier: "Callable[[str], Awaitable[None]] | None" = None,
+        remote_executor: Executor | None = None,
+        goes_remote: Callable[[Job], bool] | None = None,
+        remote_workers: int = 8,
     ) -> None:
+        """`remote_executor` runs the jobs for which `goes_remote(job)` is true, on their own
+        `remote_workers` (they only wait for a remote runner, so they don't count against
+        `workers`). It may return status QUEUED to send the job back to the local queue."""
         self.events = events or EventStore()
         self._executors = executors
         self._mgr = mgr or SandboxManager()
@@ -66,6 +72,10 @@ class JobService:
         self._timeout_s = job_timeout_s
         self._sweep = sweep_on_start
         self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._remote_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._remote_executor = remote_executor
+        self._goes_remote = goes_remote
+        self._n_remote = max(1, remote_workers) if remote_executor else 0
         self._workers: list[asyncio.Task[None]] = []
         self._running: dict[str, asyncio.Task[None]] = {}
         self._user_cancelled: set[str] = set()
@@ -82,8 +92,11 @@ class JobService:
                 log.warning("startup cleanup skipped: %s", e)
         self._recover()
         self._workers = [
-            asyncio.create_task(self._worker(), name=f"thinair-worker-{i}")
+            asyncio.create_task(self._worker(self._queue), name=f"thinair-worker-{i}")
             for i in range(self._n_workers)
+        ] + [
+            asyncio.create_task(self._worker(self._remote_queue), name=f"thinair-remote-{i}")
+            for i in range(self._n_remote)
         ]
 
     async def stop(self) -> None:
@@ -110,7 +123,7 @@ class JobService:
                         "Thinair restarted while this job was running. Retry it.",
                     )
                 else:
-                    self._queue.put_nowait(j.id)
+                    self._route(j)
 
     # ---- API used by routes --------------------------------------------------------------
     def submit(
@@ -195,8 +208,15 @@ class JobService:
 
     def _enqueue(self, job: Job) -> Job:
         self.events.emit(job.id, EventType.STATUS, {"status": JobStatus.QUEUED.value})
-        self._queue.put_nowait(job.id)
+        self._route(job)
         return job
+
+    def _route(self, job: Job) -> None:
+        remote = self._remote_executor is not None and self._goes_remote is not None
+        if remote and self._goes_remote(job):  # type: ignore[misc]
+            self._remote_queue.put_nowait(job.id)
+        else:
+            self._queue.put_nowait(job.id)
 
     def cancel(self, job_id: str) -> bool:
         """Cancel a queued or running job. Returns False if it is unknown or already finished."""
@@ -216,11 +236,14 @@ class JobService:
         return True
 
     # ---- internals -----------------------------------------------------------------------
-    async def _worker(self) -> None:
+    async def _worker(self, queue: "asyncio.Queue[str]") -> None:
+        remote = queue is self._remote_queue
         while True:
-            job_id = await self._queue.get()
+            job_id = await queue.get()
             try:
-                task = asyncio.create_task(self._execute(job_id), name=f"thinair-job-{job_id}")
+                task = asyncio.create_task(
+                    self._execute(job_id, remote), name=f"thinair-job-{job_id}"
+                )
                 self._running[job_id] = task
                 try:
                     # `wait`, not `await task`: awaiting would forward our own cancellation into the
@@ -240,9 +263,9 @@ class JobService:
             except Exception:
                 log.exception("job %s crashed the worker loop", job_id)
             finally:
-                self._queue.task_done()
+                queue.task_done()
 
-    async def _execute(self, job_id: str) -> None:
+    async def _execute(self, job_id: str, remote: bool = False) -> None:
         with session_scope() as s:
             job = s.get(Job, job_id)
             if job is None or job.status != JobStatus.QUEUED:
@@ -254,11 +277,16 @@ class JobService:
             s.commit()
         self.events.emit(job_id, EventType.STATUS, {"status": JobStatus.RUNNING.value})
         ctx = JobContext(job=job, repo=repo, events=self.events)  # type: ignore[arg-type]
+        executor = self._remote_executor if remote else self._executors[job.kind]
         timeout = asyncio.timeout(self._timeout_s)
+        requeued = False
         try:
             async with timeout:
-                res = await self._executors[job.kind](ctx, self._mgr)
-            self._finish(job_id, res.status, res.error_code, res.error_message)
+                res = await executor(ctx, self._mgr)  # type: ignore[misc]
+            if remote and res.status == JobStatus.QUEUED:
+                requeued = self._requeue_locally(job_id)
+            else:
+                self._finish(job_id, res.status, res.error_code, res.error_message)
         except TimeoutError:
             if timeout.expired():
                 self._finish(
@@ -289,8 +317,20 @@ class JobService:
             self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         finally:
             self._user_cancelled.discard(job_id)
-            if not self._stopping:
+            if not self._stopping and not requeued:
                 self._announce(job_id)
+
+    def _requeue_locally(self, job_id: str) -> bool:
+        with session_scope() as s:
+            job = s.get(Job, job_id)
+            if job is None or job.status != JobStatus.RUNNING:
+                return False
+            job.status, job.started_at, job.runner_id = JobStatus.QUEUED, None, None
+            s.add(job)
+            s.commit()
+        self.events.emit(job_id, EventType.STATUS, {"status": JobStatus.QUEUED.value})
+        self._queue.put_nowait(job_id)
+        return True
 
     def _announce(self, job_id: str) -> None:
         """Fire-and-forget notification; it can never delay or fail the job."""

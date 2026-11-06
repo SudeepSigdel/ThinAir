@@ -36,6 +36,11 @@ def _owner(job: Job):  # noqa: ANN202
         return user
 
 
+def owner_github_auth(job: Job) -> bool:
+    """May this job use a GitHub token (the server's, or a remote runner's own)?"""
+    return github_token_allowed(_owner(job))
+
+
 async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult:
     assert mgr is not None
     result, prepared = await profile_source(
@@ -44,16 +49,23 @@ async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecR
         ctx.job.id,
         log=ctx.log,
         on_run=lambda rec: ctx.emit(EventType.PROFILE_RUN, rec.model_dump(mode="json")),
-        github_auth=github_token_allowed(_owner(ctx.job)),
+        github_auth=owner_github_auth(ctx.job),
     )
-    markdown = to_markdown(
-        result, project=ctx.repo.name, commit=prepared.commit_sha, stack=prepared.resolved.stack
+    return save_profile_result(
+        ctx.job.id, ctx.repo.name, result, prepared.commit_sha, prepared.resolved.stack
     )
+
+
+def save_profile_result(
+    job_id: str, repo_name: str, result: ProfileResult, commit_sha: str | None, stack: str | None
+) -> ExecResult:
+    """Store a finished profile (also used for results reported by remote runners)."""
+    markdown = to_markdown(result, project=repo_name, commit=commit_sha, stack=stack)
     with session_scope() as s:
-        _save_profile(s, ctx.job.id, result, markdown)
-        job = s.get(Job, ctx.job.id)
+        _save_profile(s, job_id, result, markdown)
+        job = s.get(Job, job_id)
         if job is not None:
-            job.commit_sha = prepared.commit_sha
+            job.commit_sha = commit_sha
             s.add(job)
             s.commit()
     if result.status == "baseline_failed":

@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     agent_egress: Literal["allowlist", "open"] = "allowlist"
     agent_egress_extra_hosts: str = ""
 
+    # Remote runners (other machines that run profile jobs; see thinair/runners.py):
+    # auto = a profile job goes to a runner if one is waiting for work, else runs here (and comes
+    #        back here if no runner takes it within runner_claim_timeout_s);
+    # runners = profile jobs only ever run on runners (they wait for one); local = never.
+    runner_placement: Literal["auto", "runners", "local"] = "auto"
+    runner_claim_timeout_s: float = 60
+    runner_lease_s: float = 90  # a runner silent this long loses its job (runner_lost)
+
     # Optional Telegram notifications when a job finishes (outbound only; see thinair/notify.py).
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None

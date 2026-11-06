@@ -1,0 +1,54 @@
+# A remote runner: a second machine (e.g. a bigger computer at home) that runs profile jobs for
+# your Thinair server. It connects OUT to the server, so it needs no open port.
+#
+#   1. On the server:  docker compose exec thinair thinair runner add homebox
+#   2. Here, in .env.runner:
+#        THINAIR_SERVER_URL=https://thinair.example.com
+#        THINAIR_RUNNER_TOKEN=thinair_runner_...
+#   3. docker compose -f docker-compose.runner.yml up -d
+#
+# See docs/runners.md.
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      VOLUMES: 1
+      BUILD: 1
+      POST: 1
+      INFO: 1
+      # Profile jobs need no networks API, exec, swarm, secrets, ...: all denied.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [internal]
+    mem_limit: 32m
+
+  runner:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${THINAIR_PIP_INDEX_URL:-}
+    command: ["thinair", "runner", "start"]
+    restart: unless-stopped
+    env_file:
+      - path: .env.runner
+        required: true
+    environment:
+      THINAIR_DOCKER_HOST: tcp://docker-proxy:2375
+      THINAIR_DATA_DIR: /tmp/thinair
+    healthcheck:
+      disable: true  # the image's check is for the server's HTTP port
+    depends_on: [docker-proxy]
+    networks: [internal, default]
+    mem_limit: 192m
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  internal:
+    internal: true
+  default: {}

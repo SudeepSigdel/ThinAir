@@ -7,16 +7,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from thinair import __version__
-from thinair.api import auth, routes
+from thinair.api import auth, routes, runner_api
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
 from thinair.db.migrate import upgrade
-from thinair.db.models import JobKind
+from thinair.db.models import Job, JobKind
 from thinair.db.session import get_engine, session_scope
 from thinair.jobs.executors import default_executors
 from thinair.jobs.service import Executor, JobService
 from thinair.notify import NotifyConfigError, notifier_from_settings
+from thinair.runners import RunnerHub, make_remote_executor
 
 log = logging.getLogger("thinair")
 
@@ -42,13 +43,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except NotifyConfigError as e:
         logging.getLogger("thinair").error("notifications disabled: %s", e)
         notifier = None
+    hub = RunnerHub()
+
+    def goes_remote(job: Job) -> bool:
+        placement = get_settings().runner_placement
+        if job.kind != JobKind.PROFILE or placement == "local":
+            return False
+        return placement == "runners" or hub.has_idle_runner()
+
     jobs = JobService(
         app.state.executors or default_executors(),
         workers=settings.max_concurrent_jobs,
         job_timeout_s=settings.job_timeout_s,
         sweep_on_start=settings.sweep_on_start,
         notifier=notifier,
+        remote_executor=make_remote_executor(hub),
+        goes_remote=goes_remote,
     )
+    app.state.runners = hub
     await jobs.start()
     app.state.jobs = jobs
     try:
@@ -63,6 +75,8 @@ def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
     app.state.executors = executors
     app.include_router(auth.router)
     app.include_router(routes.router)
+    app.include_router(runner_api.admin_router)
+    app.include_router(runner_api.runner_router)
     mount_web(app)
 
     @app.get("/healthz", tags=["meta"])

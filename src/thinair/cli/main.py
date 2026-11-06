@@ -338,3 +338,112 @@ def auth(
         return
     typer.echo(cfg.auth.login_help)
     raise typer.Exit(subprocess.call(argv))  # noqa: S603
+
+
+# ---- remote runners -------------------------------------------------------------------------
+runner_app = typer.Typer(help="Other machines that run profile jobs for this server.")
+app.add_typer(runner_app, name="runner")
+
+
+@runner_app.command("add")
+def runner_add(name: str) -> None:
+    """Register a runner (on the server). Prints its secret once."""
+    from thinair.runners import RunnerError, create_runner
+
+    upgrade(get_engine())
+    with session_scope() as session:
+        try:
+            _, token = create_runner(session, name)
+        except RunnerError as e:
+            typer.echo(e.message, err=True)
+            raise typer.Exit(1) from e
+    typer.echo(f"Runner {name!r} registered. Its secret (shown once):")
+    typer.echo(f"  {token}")
+    typer.echo("")
+    typer.echo("On the runner machine, put it in THINAIR_RUNNER_TOKEN and run:")
+    typer.echo("  thinair runner start --server https://<this server>")
+
+
+@runner_app.command("list")
+def runner_list() -> None:
+    """List runners (never shows secrets)."""
+    from thinair.runners import list_runners
+
+    upgrade(get_engine())
+    with session_scope() as session:
+        for r in list_runners(session):
+            state = "disabled" if r.disabled_at else "active"
+            seen = r.last_seen_at.strftime("%Y-%m-%d %H:%M") if r.last_seen_at else "never"
+            cpus = (r.info or {}).get("cpus")
+            typer.echo(f"{r.name:<16} {state:<9} last seen {seen}  cpus {cpus or '?'}")
+
+
+@runner_app.command("disable")
+def runner_disable(name: str) -> None:
+    """Stop accepting a runner's secret (its current job is lost)."""
+    from thinair.runners import RunnerError, disable_runner
+
+    upgrade(get_engine())
+    with session_scope() as session:
+        try:
+            disable_runner(session, name)
+        except RunnerError as e:
+            typer.echo(e.message, err=True)
+            raise typer.Exit(1) from e
+    typer.echo(f"Runner {name!r} disabled.")
+
+
+@runner_app.command("start")
+def runner_start(
+    server: str = typer.Option(
+        ..., "--server", envvar="THINAIR_SERVER_URL", help="The Thinair server, https://..."
+    ),
+    token_file: Path | None = typer.Option(
+        None, "--token-file", help="Read the runner secret from this file"
+    ),
+    allow_http: bool = typer.Option(
+        False,
+        "--allow-http",
+        envvar="THINAIR_RUNNER_ALLOW_HTTP",
+        help="Allow http:// (only on a private network you trust)",
+    ),
+) -> None:
+    """Run profile jobs for a server (on the runner machine). Needs Docker here.
+
+    The secret comes from THINAIR_RUNNER_TOKEN or --token-file, never the command line.
+    """
+    import contextlib
+    import logging
+    import os
+
+    from thinair.runner_client import (
+        RunnerClient,
+        RunnerSetupError,
+        check_server_url,
+        check_token,
+    )
+
+    _utf8_output()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        raw = (
+            token_file.read_text(encoding="utf-8")
+            if token_file
+            else os.environ.get("THINAIR_RUNNER_TOKEN")
+        )
+        token = check_token(raw)
+        url = check_server_url(server, allow_http)
+        mgr = SandboxManager()
+        info = {"cpus": mgr.host_cpus() or None}
+        with contextlib.suppress(Exception):  # only informational
+            info["memory_bytes"] = int(mgr.client.info().get("MemTotal") or 0) or None
+        typer.echo(f"Runner started; waiting for profile jobs from {url}")
+        asyncio.run(RunnerClient(url, token, info=info).run_forever())
+    except RunnerSetupError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    except OSError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    except KeyboardInterrupt:
+        typer.echo("Runner stopped.")

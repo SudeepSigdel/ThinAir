@@ -209,6 +209,26 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   `gemini-acp` (`gemini --acp`). Tests: `test_acp.py` (host Node + `fixtures/fake_acp_agent.py`; skips without
   Node), `test_acp_docker.py` (fake agent through CLIAdapter), real CLIs in `test_more_agents_docker.py`.
 
+## Remote runners (`src/thinair/runners.py`, `api/runner_api.py`, `runner_client.py`, phase 3 step 21)
+- Owner's defaults (accepted with "continue"): the runner connects OUT (long-poll), one secret per runner
+  (`thinair_runner_` + 256 bit, SHA-256 in table `Runner`), profile jobs only, shared by everyone. Docs: docs/runners.md.
+- Server: `RunnerHub` (in memory) holds pending job ids + `Lease`s. `JobService(remote_executor=, goes_remote=)` puts
+  routed jobs on a second queue with their own cheap workers (`remote_workers`, default 8; they only wait, so they
+  don't block local jobs). `remote_executor` offers the job, waits for a claim (auto: `runner_claim_timeout_s`, then
+  returns status QUEUED -> `_requeue_locally`), then for `lease.done`; silent > `runner_lease_s` -> `runner_lost`.
+  Placement `auto|runners|local` (auto = remote only if `hub.has_idle_runner()` at enqueue time).
+- Protocol v1 (`/runner/v1`, `require_runner`; user tokens never accepted there, runner secrets never on /api):
+  `claim?wait=` (<=25 s, 204 = nothing) -> {id, kind, repo_url, ref, github_auth}; `jobs/{id}/events` (log /
+  profile_run, also the heartbeat) -> `{cancel}`; `jobs/{id}/finish` (profiled + ProfileResult, or failed + code).
+  Bodies read with a 4 MB cap, then pydantic-validated. Unknown/foreign lease -> cancel:true / accepted:false.
+  The report is saved by `executors.save_profile_result` (shared with the local profile executor).
+- Runner: `thinair runner start` (`RunnerClient`, `requests`), secret from `THINAIR_RUNNER_TOKEN`/`--token-file`,
+  https required except localhost (`--allow-http`). Re-validates the payload with `GitSource.validate()`. Uses its
+  OWN `THINAIR_GITHUB_TOKEN` only when `github_auth` is true. No janitor sweep (it could share a Docker host).
+  `docker-compose.runner.yml` (socket proxy without NETWORKS/EXEC).
+- Tests: `test_runners.py` (API protocol via one TestClient, JobService fallback/lost, and the real client against a
+  live uvicorn on a random port with a fake profiler).
+
 ## Pull requests (`src/thinair/jobs/pr.py`, phase 2 step 14)
 - Agent job end: `CLIAdapter._collect_patch` writes `git diff --cached --binary --full-index` to `.git/thinair.patch`
   and reads it back with `SandboxManager.get_file` (Docker archive API; captured output is line-based and would
@@ -259,5 +279,5 @@ MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Co
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
 Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
 Phase 3: 17 egress allowlist (Claude Code on by default), 18 Postgres support, 19 multiple users (design choices
-made without the owner, listed in README "Several users"; review them) and 20 ACP agents done. Remote runners
-still need a design discussion with the owner first (how runners authenticate/connect, what they may access).
+made without the owner, listed in README "Several users"; review them), 20 ACP agents and 21 remote runners
+(profile jobs only) done.
