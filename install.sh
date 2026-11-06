@@ -175,12 +175,16 @@ until docker compose exec -T thinair python -c \
   sleep 2
 done
 
-step "Preparing the sandbox images (one time, so your first job starts right away)"
-docker compose exec -T thinair thinair images ||
-  say "Could not prepare them now; the first job will do it."
-
-step "Checking the setup"
-docker compose exec -T thinair thinair doctor || true
+# Older images (pinned with THINAIR_VERSION) may not have these commands: then skip them.
+if docker compose exec -T thinair thinair images --help >/dev/null 2>&1; then
+  step "Preparing the sandbox images (one time, so your first job starts right away)"
+  docker compose exec -T thinair thinair images ||
+    say "Could not prepare them now; the first job will do it."
+fi
+if docker compose exec -T thinair thinair doctor --help >/dev/null 2>&1; then
+  step "Checking the setup"
+  docker compose exec -T thinair thinair doctor || true
+fi
 
 port="$(sed -n 's/^THINAIR_PORT=//p' .env | tail -n 1)"
 bind="$(sed -n 's/^THINAIR_BIND=//p' .env | tail -n 1)"
