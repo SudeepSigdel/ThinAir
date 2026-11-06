@@ -53,8 +53,12 @@ fetch() { # url file (file:// works too, for offline installs and tests)
   fi
 }
 
+has_tty() { # a terminal we can really open (-r alone is not enough: it can exist but fail)
+  (exec </dev/tty) 2>/dev/null
+}
+
 ask() { # prompt var: read from the terminal even when this script comes through a pipe
-  [ -r /dev/tty ] || die "Set $2 (no terminal to ask for it)."
+  has_tty || die "Set $2 (no terminal to ask for it)."
   printf '%s' "$1" >/dev/tty
   # shellcheck disable=SC2034 # used through eval below
   IFS= read -r answer </dev/tty || die "Set $2."
@@ -113,7 +117,7 @@ setup_domain() {
 phone_access() { # port
   choice="${THINAIR_PHONE:-}"
   if [ -z "$choice" ]; then
-    [ -r /dev/tty ] || return 0
+    has_tty || return 0
     say ""
     say "How will you open Thinair from your phone? (installing the app needs HTTPS)"
     say "  1) Tailscale (private, no open ports; Tailscale must be installed here)"
