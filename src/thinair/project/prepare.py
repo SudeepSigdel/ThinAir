@@ -148,10 +148,16 @@ async def _read_text(mgr, job_id, volume, rel: str) -> str | None:
 
 
 async def prepare_workspace(
-    mgr: SandboxManager, source: GitSource | DirSource, job_id: str, log: LogFn
+    mgr: SandboxManager,
+    source: GitSource | DirSource,
+    job_id: str,
+    log: LogFn,
+    *,
+    github_auth: bool = True,
 ) -> PreparedProject:
     """Create the workspace volume and run clone/upload, detection and install.
 
+    `github_auth=False` clones anonymously even if a GitHub token is configured (members' jobs).
     On any failure the volume is removed and a `PrepareError` is raised.
     """
     if isinstance(source, GitSource):
@@ -160,7 +166,7 @@ async def prepare_workspace(
     try:
         await ensure_image(mgr, "python", log)  # also used for clone / inspection
         await asyncio.to_thread(mgr.create_volume, volume, job_id)
-        commit = await _load_source(mgr, source, job_id, volume, log)
+        commit = await _load_source(mgr, source, job_id, volume, log, github_auth)
 
         names = await _list_names(mgr, job_id, volume)
         cfg_text = (
@@ -188,7 +194,7 @@ async def prepare_workspace(
         raise
 
 
-async def _load_source(mgr, source, job_id, volume, log) -> str | None:
+async def _load_source(mgr, source, job_id, volume, log, github_auth=True) -> str | None:
     if isinstance(source, DirSource):
         log(f"[thinair] importing {source.path}")
         data = await asyncio.to_thread(dir_to_tar, source.path)
@@ -196,7 +202,7 @@ async def _load_source(mgr, source, job_id, volume, log) -> str | None:
         return None
 
     try:
-        token = github_token()
+        token = github_token() if github_auth else None
     except GitHubTokenError as e:
         raise PrepareError("bad_github_token", str(e)) from None
     log(f"[thinair] cloning {source.url}" + (" (with the GitHub token)" if token else ""))
@@ -209,6 +215,11 @@ async def _load_source(mgr, source, job_id, volume, log) -> str | None:
             hint = (
                 "Check the URL, and that THINAIR_GITHUB_TOKEN has read access to this "
                 "repository and has not expired."
+            )
+        elif not github_auth:
+            hint = (
+                "It may not exist, or it may be private: only admins' jobs may use the "
+                "server's GitHub token."
             )
         else:
             hint = (

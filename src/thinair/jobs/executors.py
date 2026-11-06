@@ -25,6 +25,15 @@ from thinair.profiler.report import to_markdown
 from thinair.profiler.runner import profile_source
 from thinair.project.prepare import GitSource, prepare_workspace
 from thinair.sandbox.manager import SandboxManager
+from thinair.users import auth_volume_name, github_token_allowed, job_user
+
+
+def _owner(job: Job):  # noqa: ANN202
+    with session_scope() as s:
+        user = job_user(s, job)
+        if user is not None:
+            s.expunge(user)
+        return user
 
 
 async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult:
@@ -35,6 +44,7 @@ async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecR
         ctx.job.id,
         log=ctx.log,
         on_run=lambda rec: ctx.emit(EventType.PROFILE_RUN, rec.model_dump(mode="json")),
+        github_auth=github_token_allowed(_owner(ctx.job)),
     )
     markdown = to_markdown(
         result, project=ctx.repo.name, commit=prepared.commit_sha, stack=prepared.resolved.stack
@@ -97,9 +107,25 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
     if not (job.task or "").strip():
         return ExecResult(JobStatus.FAILED, "missing_task", "Describe the task for the agent.")
 
-    prepared = await prepare_workspace(mgr, GitSource(ctx.repo.url, job.ref), job.id, ctx.log)
+    owner = _owner(job)
+    prepared = await prepare_workspace(
+        mgr,
+        GitSource(ctx.repo.url, job.ref),
+        job.id,
+        ctx.log,
+        github_auth=github_token_allowed(owner),
+    )
     try:
-        adapter = CLIAdapter(cfg, mgr, job.id, prepared)
+        # Each user logs in to the agent in their own volume; API keys from Thinair's own
+        # environment are the owner's, so only the owner's jobs get them.
+        adapter = CLIAdapter(
+            cfg,
+            mgr,
+            job.id,
+            prepared,
+            host_env=None if owner is None else {},
+            auth_volume=auth_volume_name(cfg.id, owner),
+        )
         try:
             await adapter.prepare(ctx.log)
         except AgentAuthError as e:

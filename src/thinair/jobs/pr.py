@@ -31,6 +31,7 @@ from thinair.jobs.service import ExecResult, JobContext
 from thinair.project.prepare import GIT_IMAGE, SANDBOX_UID, ensure_image, workspace_volume
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
+from thinair.users import github_token_allowed, job_user
 
 PATCH_IN_VOLUME = ".git/thinair-pr.patch"
 _SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"]
@@ -221,8 +222,13 @@ async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult
             parent = s.get(Job, job.parent_job_id) if job.parent_job_id else None
             result = s.get(JobResult, parent.id) if parent else None
             repo = s.get(Repo, parent.repo_id) if parent else None
+            allowed = parent is not None and github_token_allowed(job_user(s, parent))
         check_pr_possible(parent, result)
         assert parent is not None and result is not None and repo is not None
+        if not allowed:  # also checked at submit; the setting may have changed since
+            from thinair.jobs.service import GITHUB_NOT_ALLOWED
+
+            raise PRError("github_not_allowed", GITHUB_NOT_ALLOWED)
         assert result.patch is not None and parent.commit_sha is not None
         owner, name = repo_slug(repo.url)
         branch = pr_branch(parent.id)

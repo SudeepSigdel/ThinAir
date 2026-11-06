@@ -79,7 +79,11 @@ def test_api_requires_token(client) -> None:
 
 def test_bearer_auth(client) -> None:
     r = client.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"})
-    assert r.status_code == 200 and r.json() == {"token_name": "env-admin"}
+    assert r.status_code == 200 and r.json() == {
+        "token_name": "env-admin",
+        "user": "admin",
+        "is_admin": True,
+    }
     assert client.get("/api/me", headers={"Authorization": "Bearer nope"}).status_code == 401
 
 

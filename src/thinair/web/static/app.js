@@ -128,6 +128,7 @@ function hideAll() {
 function showLogin() {
   hideAll();
   show("logout", false);
+  show("who", false);
   show("view-login");
   $("token").focus();
 }
@@ -135,7 +136,10 @@ function showLogin() {
 async function route() {
   const m = location.hash.match(/^#\/job\/([A-Za-z0-9]+)$/);
   try {
-    await api("/api/me");
+    const me = await api("/api/me");
+    // Only worth showing once there are several people; the owner alone sees nothing new.
+    $("who").textContent = me.user && me.user !== "admin" ? me.user : "";
+    show("who", Boolean($("who").textContent));
   } catch (e) {
     if (!(e instanceof AuthError)) {
       hideAll();
@@ -245,6 +249,8 @@ async function showJob(id) {
   $("agent-result").replaceChildren();
   $("agent-msgs").replaceChildren();
   show("agent-empty");
+  show("log-box");
+  show("job-status");
   let job;
   try {
     job = await api(`/api/jobs/${id}`);
@@ -252,6 +258,7 @@ async function showJob(id) {
     if (!(e instanceof AuthError)) {
       $("job-title").textContent = "Job not found";
       showError("job-error-msg", e.message);
+      for (const part of ["runs-box", "log-box", "job-status"]) show(part, false);
     }
     return;
   }

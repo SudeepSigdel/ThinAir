@@ -18,10 +18,20 @@ from thinair.profiler.runner import profile_source
 from thinair.project.prepare import DirSource, GitSource, PrepareError
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError
+from thinair.users import (
+    OWNER_NAME,
+    UserError,
+    create_user,
+    disable_user,
+    get_user,
+    list_users,
+)
 
 app = typer.Typer(help="Thinair: run coding agents in sandboxes and profile resource needs.")
 token_app = typer.Typer(help="Manage API tokens.")
 app.add_typer(token_app, name="token")
+user_app = typer.Typer(help="Manage users (admins see everything, members only their own jobs).")
+app.add_typer(user_app, name="user")
 
 
 @app.command()
@@ -64,12 +74,26 @@ def serve() -> None:
     uvicorn.run("thinair.api.app:app", host=s.host, port=s.port, log_level=s.log_level)
 
 
+def _user_id(session, name: str | None) -> str | None:  # noqa: ANN001
+    """None for the owner (no --user, or --user admin)."""
+    if not name or name == OWNER_NAME:
+        return None
+    user = get_user(session, name)
+    if user is None or user.disabled_at is not None:
+        typer.echo(f"No active user called {name!r} (see `thinair user list`).", err=True)
+        raise typer.Exit(1)
+    return user.id
+
+
 @token_app.command("create")
-def token_create(name: str = typer.Option(..., help="Label, e.g. 'phone'")) -> None:
+def token_create(
+    name: str = typer.Option(..., help="Label, e.g. 'phone'"),
+    user: str | None = typer.Option(None, "--user", help="Owner of the token (default: you)"),
+) -> None:
     """Create an API token. The plaintext is shown once."""
     upgrade(get_engine())
     with session_scope() as session:
-        typer.echo(create_token(session, name))
+        typer.echo(create_token(session, name, user_id=_user_id(session, user)))
 
 
 @token_app.command("list")
@@ -77,9 +101,54 @@ def token_list() -> None:
     """List tokens (never shows secrets)."""
     upgrade(get_engine())
     with session_scope() as session:
+        names = {u.id: u.name for u in list_users(session)}
         for t in list_tokens(session):
             state = "revoked" if t.revoked_at else "active"
-            typer.echo(f"{t.id}  {t.name:<16} {state}")
+            owner = names.get(t.user_id, "?") if t.user_id else OWNER_NAME
+            typer.echo(f"{t.id}  {t.name:<16} {owner:<16} {state}")
+
+
+@user_app.command("add")
+def user_add(
+    name: str = typer.Argument(..., help="Lowercase name, e.g. alice"),
+    admin: bool = typer.Option(False, "--admin", help="Can see all jobs and manage users"),
+) -> None:
+    """Add a user and print their first token (shown once)."""
+    upgrade(get_engine())
+    with session_scope() as session:
+        try:
+            u = create_user(session, name, admin=admin)
+        except UserError as e:
+            typer.echo(f"error: {e.message}", err=True)
+            raise typer.Exit(1) from None
+        token = create_token(session, "first", user_id=u.id)
+    typer.echo(f"Added {u.name} ({'admin' if u.is_admin else 'member'}). Their token:")
+    typer.echo(f"  {token}")
+    typer.echo(f"They log in to agents with: thinair auth <agent> --user {u.name}")
+
+
+@user_app.command("list")
+def user_list() -> None:
+    """List users."""
+    upgrade(get_engine())
+    with session_scope() as session:
+        typer.echo(f"{OWNER_NAME:<16} admin   active (owner)")
+        for u in list_users(session):
+            role = "admin" if u.is_admin else "member"
+            typer.echo(f"{u.name:<16} {role:<7} {'disabled' if u.disabled_at else 'active'}")
+
+
+@user_app.command("disable")
+def user_disable(name: str) -> None:
+    """Disable a user and revoke their tokens (their jobs stay)."""
+    upgrade(get_engine())
+    with session_scope() as session:
+        try:
+            disable_user(session, name)
+        except UserError as e:
+            typer.echo(f"error: {e.message}", err=True)
+            raise typer.Exit(1) from None
+    typer.echo(f"Disabled {name}.")
 
 
 @token_app.command("revoke")
@@ -175,12 +244,12 @@ def notify_test() -> None:
     typer.echo("Sent. Check Telegram.")
 
 
-def login_command(cfg, image: str) -> list[str]:  # noqa: ANN001
+def login_command(cfg, image: str, volume: str | None = None) -> list[str]:  # noqa: ANN001
     """`docker run` for an interactive login, hardened like every sandbox. Only the agent's own
     login volume is mounted; tokens from Thinair's environment are deliberately NOT passed."""
     argv = ["docker", "run", "-it", "--rm", "--user", "10001:10001", "--cap-drop", "ALL"]
     argv += ["--security-opt", "no-new-privileges:true", "--pids-limit", "512"]
-    argv += ["-v", f"{cfg.auth_volume}:{cfg.auth.config_dir}", "-e", "HOME=/tmp"]
+    argv += ["-v", f"{volume or cfg.auth_volume}:{cfg.auth.config_dir}", "-e", "HOME=/tmp"]
     for key, value in cfg.env.items():
         argv += ["-e", f"{key}={value}"]
     return [*argv, image, *cfg.auth.login_command]
@@ -194,10 +263,14 @@ def auth(
         False, "--print-command", help="Print the docker command instead of running it"
     ),
     stack: str = typer.Option("node", help="Which project image to base the agent on"),
+    user: str | None = typer.Option(
+        None, "--user", help="Log in for this Thinair user (default: the owner)"
+    ),
 ) -> None:
     """Log a coding agent in once, with YOUR account, inside its own Docker volume.
 
     Thinair never reads or copies the login; it is mounted only into that agent's sandboxes.
+    Every user has their own login volume: jobs never run on someone else's account.
     """
     import shlex
     import shutil
@@ -207,8 +280,17 @@ def auth(
     from thinair.agents.config import load_agents
     from thinair.jobs.executors import agents_dir
     from thinair.sandbox.spec import SandboxSpec, VolumeMount
+    from thinair.users import auth_volume_name
 
     _utf8_output()
+    owner = None
+    if user and user != OWNER_NAME:
+        upgrade(get_engine())
+        with session_scope() as session:
+            owner = get_user(session, user)
+        if owner is None or owner.disabled_at is not None:
+            typer.echo(f"No active user called {user!r} (see `thinair user list`).", err=True)
+            raise typer.Exit(1)
     found, _ = load_agents(agents_dir())
     cfg = found.get(agent_id)
     if cfg is None:
@@ -221,7 +303,8 @@ def auth(
         image = asyncio.run(
             ensure_agent_image(mgr, cfg, stack, lambda line: typer.echo(line, err=True))
         )
-        mgr.ensure_persistent_volume(cfg.auth_volume, {"thinair.auth": cfg.id})
+        volume = auth_volume_name(cfg.id, owner)
+        mgr.ensure_persistent_volume(volume, {"thinair.auth": cfg.id})
     except SandboxError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
@@ -235,7 +318,7 @@ def auth(
             command=cfg.auth.check_command,
             job_id="auth-check",
             env={**cfg.env, "HOME": "/tmp"},  # noqa: S108
-            mounts=[VolumeMount(volume=cfg.auth_volume, path=cfg.auth.config_dir)],
+            mounts=[VolumeMount(volume=volume, path=cfg.auth.config_dir)],
             network=True,
             timeout_s=90,
             tmp_noexec=False,
@@ -245,7 +328,7 @@ def auth(
         typer.echo(f"{cfg.name}: {'logged in' if ok else 'NOT logged in'}")
         raise typer.Exit(0 if ok else 1)
 
-    argv = login_command(cfg, image)
+    argv = login_command(cfg, image, volume)
     if print_command or shutil.which("docker") is None:
         typer.echo("Run this on the Docker host (it needs an interactive terminal):")
         typer.echo("")

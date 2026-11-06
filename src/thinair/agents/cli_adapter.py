@@ -130,8 +130,10 @@ class CLIAdapter:
         job_id: str,
         prepared: PreparedProject,
         host_env: Mapping[str, str] | None = None,
+        auth_volume: str | None = None,
     ) -> None:
         self.cfg = cfg
+        self.auth_volume = auth_volume or cfg.auth_volume
         self._mgr = mgr
         self._job = job_id
         self._p = prepared
@@ -147,8 +149,14 @@ class CLIAdapter:
     def _mounts(self, workspace_ro: bool = False) -> list[VolumeMount]:
         return [
             VolumeMount(volume=self._p.volume, path="/workspace", read_only=workspace_ro),
-            VolumeMount(volume=self.cfg.auth_volume, path=self.cfg.auth.config_dir),
+            VolumeMount(volume=self.auth_volume, path=self.cfg.auth.config_dir),
         ]
+
+    def _auth_hint(self) -> str:
+        if self.auth_volume == self.cfg.auth_volume:
+            return self.cfg.auth_hint
+        user = self.auth_volume.rsplit(".", 1)[-1]
+        return f"{self.cfg.auth_hint} Logins are per user: add `--user {user}`."
 
     def _env(self) -> dict[str, str]:
         return {**self._p.resolved.env, **self.cfg.env, **self._passthrough}
@@ -205,7 +213,7 @@ class CLIAdapter:
         self._image = await ensure_agent_image(self._mgr, self.cfg, stack, log)
         await ensure_image(self._mgr, "git", log)
         await asyncio.to_thread(
-            self._mgr.ensure_persistent_volume, self.cfg.auth_volume, {"thinair.auth": self.cfg.id}
+            self._mgr.ensure_persistent_volume, self.auth_volume, {"thinair.auth": self.cfg.id}
         )
         # Baseline commit after clone + install, so the diff shows only the agent's work (even
         # work it commits itself). Uploaded folders without git get a repository here.
@@ -227,7 +235,7 @@ class CLIAdapter:
             self._spec(check, timeout_s=90, cpus=1, memory_bytes=512 * 1024**2)
         )
         if res.exit_code != 0:
-            raise AgentAuthError(self.cfg.auth_hint)
+            raise AgentAuthError(self._auth_hint())
 
     async def run(self, task: str) -> AsyncIterator[AgentEvent]:
         if self._image is None:
@@ -298,7 +306,7 @@ class CLIAdapter:
                 f"{self.cfg.name} did not finish within {self.cfg.limits.timeout_s} s."
             )
         elif auth_hit and not r.success:
-            r.error_code, r.error_message = AgentAuthError.code, self.cfg.auth_hint
+            r.error_code, r.error_message = AgentAuthError.code, self._auth_hint()
         elif not r.success:
             r.error_code = "agent_failed"
             r.error_message = (

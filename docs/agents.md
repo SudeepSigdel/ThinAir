@@ -22,8 +22,11 @@ and paste the printed `docker run -it ...` command into a terminal on the Docker
 set `CLAUDE_CODE_OAUTH_TOKEN` in Thinair's `.env`. Variables listed under `auth.env_passthrough`
 are forwarded only into that agent's container and are masked (`***`) in all logs.
 
-Use only your own account. Thinair is single-tenant by design: one person's login must never run
-another person's tasks. Check your plan's terms for automated use.
+Use only your own account: one person's login must never run another person's tasks. With
+several Thinair users (see the README), every user has their own volume,
+`thinair-auth-<id>.<user>`, and logs in with `thinair auth <id> --user <user>`; their jobs only
+ever mount that volume. The owner keeps `thinair-auth-<id>`, and only the owner's jobs get the
+`env_passthrough` variables from Thinair's `.env`. Check your plan's terms for automated use.
 
 ## Security model for agent runs
 

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # only to the clone container; never stored, logged or passed to install/test/agent runs.
     github_token: SecretStr | None = None
     github_token_file: Path | None = None  # alternative for Docker secrets
+    # Whether jobs of *member* users (not admins) may use that token: private clones and pull
+    # requests as the token's GitHub account. Off by default (members: public repositories only).
+    github_token_for_members: bool = False
     # Commit author for pull requests opened from agent jobs (use your GitHub noreply email
     # to have commits linked to your account).
     git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")

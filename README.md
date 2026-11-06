@@ -25,7 +25,7 @@ Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
 Private GitHub repositories and opening pull requests work with a GitHub token (see below).
 Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
-Gemini CLI. Not yet built: multiple users.
+Gemini CLI. Several people can share one server, each with their own jobs and agent logins.
 
 ## Quickstart (about 5 minutes)
 
@@ -121,6 +121,33 @@ on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
 account). Pushing still never happens inside the agent's sandbox: the agent never sees the
 token. Changes larger than 5 MB can't be turned into a PR from Thinair.
 
+## Several users
+
+By default you are the only user: the owner, called `admin`, who logs in with
+`THINAIR_ADMIN_TOKEN`. To let someone else use your server:
+
+```sh
+docker compose exec thinair thinair user add alice           # prints alice's first token
+docker compose exec thinair thinair user add bob --admin     # an admin sees and manages everything
+docker compose exec thinair thinair auth claude --user alice --print-command
+```
+
+- **Members see only their own jobs** (and only repositories they have run jobs on). Someone
+  else's job is simply "not found". Admins see all jobs. Retrying a job or opening a PR from it
+  keeps its original owner.
+- **Agent logins are per user.** Alice logs in to Claude Code with her own account, in her own
+  volume `thinair-auth-claude.alice`, so nobody runs on someone else's subscription. API keys in
+  Thinair's `.env` (such as `CLAUDE_CODE_OAUTH_TOKEN`) are the owner's and only reach the owner's
+  jobs.
+- **The server's GitHub token is for admins.** Members' jobs clone anonymously (public
+  repositories) and cannot open pull requests; they can still download the patch. Set
+  `THINAIR_GITHUB_TOKEN_FOR_MEMBERS=true` if you trust them with what that token can reach.
+- `thinair user list`, `thinair user disable alice` (revokes all her tokens; her jobs stay),
+  `thinair token create --name laptop --user alice`. Admins can do the same over the API
+  (`/api/users`, see `/docs`).
+- Everyone shares the same job queue and machine limits, and Telegram notifications for every
+  job go to the owner's chat.
+
 ## Notifications (Telegram)
 
 Get a message when a job finishes, with a link back to it:
@@ -184,7 +211,8 @@ thinair serve                    run the server (what the container runs)
 thinair profile <dir|url>        profile locally without the server; --md/--json to save the report
 thinair auth <agent> [--check]   log an agent in (interactive), or check its login
 thinair agents                   list agent configs (and report broken ones)
-thinair token create|list|revoke manage API tokens
+thinair token create|list|revoke manage API tokens (--user NAME for someone else's)
+thinair user add|list|disable    manage users (see "Several users")
 ```
 
 The HTTP API is documented at `/docs` on your server (log in there with the same token).
@@ -274,8 +302,8 @@ runs. Memory limits are set on every service. Measured numbers are in
 
 - **Phase 2:** private repositories, pull requests from an agent's change and Telegram
   notifications, Codex CLI and Gemini CLI configs (all done).
-- **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done), multiple users, remote runners,
-  Agent Client Protocol (ACP) adapter.
+- **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done),
+  multiple users (done), remote runners, Agent Client Protocol (ACP) adapter.
 
 ## Contributing
 

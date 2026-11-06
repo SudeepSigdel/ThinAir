@@ -14,8 +14,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from thinair.auth import verify_token
-from thinair.db.models import ApiToken
 from thinair.db.session import session_scope
+from thinair.users import Principal, principal_for
 
 COOKIE_NAME = "thinair_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30
@@ -58,10 +58,17 @@ def _unauthorized() -> HTTPException:
 _bearer = HTTPBearer(auto_error=False, description="Your Thinair API token")
 
 
+def _principal(token: str) -> Principal | None:
+    with session_scope() as session:
+        row = verify_token(session, token)
+        return principal_for(session, row) if row is not None else None
+
+
 def require_auth(
     request: Request, _scheme: HTTPAuthorizationCredentials | None = Depends(_bearer)
-) -> ApiToken:
-    """FastAPI dependency: returns the matching token row or raises 401/429."""
+) -> Principal:
+    """FastAPI dependency: returns who is calling, or raises 401/429. A disabled user's tokens
+    are revoked, and are refused here even if one slipped through."""
     token = _extract_token(request)
     if not token:
         # Not a guess (e.g. the app checking whether it is logged in), so it neither counts
@@ -71,13 +78,20 @@ def require_auth(
     key = _client_key(request)
     if _throttled(key):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
-    with session_scope() as session:
-        row = verify_token(session, token)
-        if row is not None:
-            session.expunge(row)
-            return row
+    who = _principal(token)
+    if who is not None:
+        return who
     _failures[key].append(time.monotonic())
     raise _unauthorized()
+
+
+def require_admin(who: Principal = Depends(require_auth)) -> Principal:
+    if not who.is_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail={"code": "admin_only", "message": "Only an admin can do that."},
+        )
+    return who
 
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -92,9 +106,7 @@ def login(body: LoginBody, request: Request, response: Response) -> None:
     key = _client_key(request)
     if _throttled(key):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
-    with session_scope() as session:
-        ok = verify_token(session, body.token) is not None
-    if not ok:
+    if _principal(body.token) is None:
         _failures[key].append(time.monotonic())
         raise _unauthorized()
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
@@ -115,5 +127,5 @@ def logout(response: Response) -> None:
 
 
 @router.get("/me")
-def me(token: ApiToken = Depends(require_auth)) -> dict[str, str]:
-    return {"token_name": token.name}
+def me(who: Principal = Depends(require_auth)) -> dict[str, str | bool]:
+    return {"token_name": who.token_name, "user": who.name, "is_admin": who.is_admin}

@@ -12,8 +12,9 @@ names) that runs as code in the web app.
 
 ## What Thinair protects, and what it doesn't
 
-Thinair is a single-user, self-hosted tool. It runs untrusted code (the repositories you point it
-at, their dependencies, and coding agents) inside Docker containers.
+Thinair is a self-hosted tool for one person or a small group that trusts each other with the
+machine. It runs untrusted code (the repositories you point it at, their dependencies, and coding
+agents) inside Docker containers.
 
 **Protected by design**
 
@@ -31,9 +32,16 @@ at, their dependencies, and coding agents) inside Docker containers.
 - The API requires a token. Only SHA-256 hashes are stored, wrong tokens are rate-limited, and the
   browser session is an HttpOnly, SameSite=Strict cookie. The web app ships a strict CSP and
   renders all job output as plain text.
+- With several users: members only see their own jobs (others' are a 404), only admins manage
+  users, each user's agent login lives in its own volume, the owner's API keys only reach the
+  owner's jobs, and the server's GitHub token is not used for members' jobs unless
+  `THINAIR_GITHUB_TOKEN_FOR_MEMBERS=true`. Disabling a user revokes all their tokens.
 
 **Not protected (know these before you deploy)**
 
+- **Users are not isolated from each other at the machine level.** All jobs share one Docker
+  host, so a member who escapes a sandbox can reach everyone's data. Only add people you would
+  trust with a shell on the machine.
 - **Docker isolation is not a hard security boundary** against kernel exploits. For stronger
   isolation run sandboxes under gVisor (`runsc`) or in a VM. Dedicate the machine to Thinair.
 - **Anything that can create containers is powerful.** The socket proxy narrows the API, but a

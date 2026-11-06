@@ -26,10 +26,13 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create_token(session: Session, name: str, token: str | None = None) -> str:
-    """Create a token and return its plaintext (the only time it is available)."""
+def create_token(
+    session: Session, name: str, token: str | None = None, user_id: str | None = None
+) -> str:
+    """Create a token and return its plaintext (the only time it is available).
+    `user_id=None` makes it one of the owner's tokens."""
     plaintext = token or generate_token()
-    session.add(ApiToken(name=name, token_hash=hash_token(plaintext)))
+    session.add(ApiToken(name=name, token_hash=hash_token(plaintext), user_id=user_id))
     session.commit()
     return plaintext
 
@@ -75,7 +78,11 @@ def bootstrap_admin_token(session: Session, env_token: str | None) -> str | None
             raise ValueError(f"THINAIR_ADMIN_TOKEN must be at least {MIN_ENV_TOKEN_LEN} characters")
         wanted = hash_token(env_token)
         current = session.exec(
-            select(ApiToken).where(ApiToken.name == ENV_TOKEN_NAME, ApiToken.revoked_at.is_(None))  # type: ignore[union-attr]
+            select(ApiToken).where(
+                ApiToken.name == ENV_TOKEN_NAME,
+                ApiToken.user_id.is_(None),  # type: ignore[union-attr]
+                ApiToken.revoked_at.is_(None),  # type: ignore[union-attr]
+            )
         ).all()
         if any(t.token_hash == wanted for t in current):
             return None
@@ -85,13 +92,16 @@ def bootstrap_admin_token(session: Session, env_token: str | None) -> str | None
         existing = session.exec(select(ApiToken).where(ApiToken.token_hash == wanted)).first()
         if existing:  # token was previously revoked and is now being re-supplied
             existing.revoked_at = None
+            existing.user_id = None  # THINAIR_ADMIN_TOKEN always means the owner
             session.add(existing)
             session.commit()
         else:
             create_token(session, ENV_TOKEN_NAME, env_token)
         return None
 
-    active = session.exec(select(ApiToken).where(ApiToken.revoked_at.is_(None))).first()  # type: ignore[union-attr]
+    active = session.exec(
+        select(ApiToken).where(ApiToken.revoked_at.is_(None), ApiToken.user_id.is_(None))  # type: ignore[union-attr]
+    ).first()
     if active is None:
         return create_token(session, "admin")
     return None

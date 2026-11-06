@@ -122,8 +122,10 @@ class JobService:
         agent_id: str | None = None,
         ref: str | None = None,
         limits: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> Job:
-        """Create a queued job. Raises PrepareError for a bad repo URL or ref."""
+        """Create a queued job owned by `user_id` (None = the owner). Raises PrepareError for a
+        bad repo URL or ref."""
         source = GitSource(repo_url.strip().rstrip("/"), ref)
         source.validate()
         if kind not in self._executors:
@@ -144,6 +146,7 @@ class JobService:
                 agent_id=agent_id,
                 ref=ref,
                 limits=limits or {},
+                user_id=user_id,
             )
             s.add(job)
             s.commit()
@@ -153,6 +156,7 @@ class JobService:
         """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
         from thinair.db.models import JobResult
         from thinair.jobs.pr import PRError, check_pr_possible, require_token
+        from thinair.users import github_token_allowed, job_user
 
         if JobKind.PR not in self._executors:
             raise PRError("unsupported_job", "Opening pull requests is not available.")
@@ -162,6 +166,8 @@ class JobService:
             result = s.get(JobResult, agent_job_id)
             check_pr_possible(parent, result)
             assert parent is not None and result is not None
+            if not github_token_allowed(job_user(s, parent)):
+                raise PRError("github_not_allowed", GITHUB_NOT_ALLOWED)
             if result.pr_url:
                 raise PRError("pr_exists", f"A pull request is already open: {result.pr_url}")
             active = s.exec(
@@ -181,6 +187,7 @@ class JobService:
                 task=parent.task,
                 ref=parent.ref,
                 commit_sha=parent.commit_sha,
+                user_id=parent.user_id,
             )
             s.add(job)
             s.commit()
@@ -326,4 +333,8 @@ class JobService:
             s.commit()
 
 
+GITHUB_NOT_ALLOWED = (
+    "Pull requests use the server's GitHub token, which is for admins only here. Download the "
+    "patch instead, or ask an admin (THINAIR_GITHUB_TOKEN_FOR_MEMBERS)."
+)
 _INTERNAL = "Something went wrong inside Thinair. Check the server logs for details."

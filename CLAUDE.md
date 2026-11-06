@@ -6,7 +6,7 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 ## Hard constraints
 - Agent-agnostic: Thinair never calls an LLM API. It drives agent CLIs as black boxes.
 - Never proxy/store subscription credentials. Each agent logs in inside its own Docker volume
-  (`thinair-auth-<agent>`) that Thinair never reads.
+  (`thinair-auth-<agent>`, per user `thinair-auth-<agent>.<user>`) that Thinair never reads.
 - Self-hostable on a 1-4 GB ARM VM: `docker compose up`.
 - Secure by default: sandboxes non-root, cap-drop ALL, resource-limited, no Docker socket. API needs auth.
 
@@ -56,6 +56,22 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   Protect routes with `Depends(require_auth)`. `/healthz` is the only open route. Wrong tokens are throttled
   (10/min/IP); requests with *no* token are a plain 401 and never count (else reloading the logged-out UI locks you out).
 - `session_scope()` uses `expire_on_commit=False` so rows stay readable after the session closes.
+
+## Users (`src/thinair/users.py`, phase 3 step 19)
+- Owner = tokens/jobs with `user_id NULL` (no data migration; `THINAIR_ADMIN_TOKEN` and the bootstrap token are the
+  owner's; bootstrap ignores members' tokens). `User` rows: name `^[a-z][a-z0-9_-]{0,31}$` (no dots), `admin`
+  reserved, `is_admin`, `disabled_at` (disable also revokes tokens; `principal_for` refuses disabled users anyway).
+- `require_auth` returns a `Principal` (token + user). Routes: `_job_and_repo(s, id, who)` 404s jobs the caller
+  can't see (members: own jobs only; admins: all); repos visible to members only via their jobs. `require_admin`
+  guards `/api/users*` (403 `admin_only`). Retry / PR keep the job's owner (`Job.user_id`).
+- Jobs act as their owner: login volume `auth_volume_name(agent, user)` (`thinair-auth-<a>` / `thinair-auth-<a>.<u>`),
+  `env_passthrough` only for the owner (`host_env={}` otherwise), GitHub token only if `github_token_allowed(user)`
+  (owner/admin, or `THINAIR_GITHUB_TOKEN_FOR_MEMBERS`) -> `prepare_workspace(github_auth=...)`; PR refused 403
+  `github_not_allowed` at submit and again in `pr_executor`. CLI: `thinair user add|list|disable`,
+  `token create --user`, `auth <agent> --user`.
+- Testing gotcha: API tests acting as several users must send every request through the ONE lifespan TestClient
+  (per-request headers, see `As` in test_users.py). A second TestClient runs on another event loop and never wakes
+  the job workers, so jobs stay queued.
 
 ## Sandbox (`src/thinair/sandbox/`)
 - `SandboxSpec` (spec.py) -> `SandboxManager.run()` (manager.py). Always: uid 10001, cap-drop ALL, no-new-privileges,
@@ -227,5 +243,6 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 MVP (steps 1-12) done: 223 tests (187 fast + 36 Docker), browser smoke 24/24, Compose quickstart verified on this
 machine (not on a clean VM), first real public repo profiled (more-itertools: 0.25 CPU / 512 MiB).
 Phase 2 done (13 private repos, 14 pull requests, 15 Telegram, 16 Codex + Gemini configs). Browser smoke 28/28.
-Phase 3: 17 egress allowlist (Claude Code on by default) and 18 Postgres support done. Multiple users, remote
-runners and ACP need a design discussion with the owner first (see the open questions in the last summary).
+Phase 3: 17 egress allowlist (Claude Code on by default), 18 Postgres support and 19 multiple users done (design
+choices made without the owner, listed in README "Several users"; review them). Remote runners and ACP still need
+a design discussion with the owner first.

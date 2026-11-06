@@ -50,6 +50,17 @@ class RunOutcome(StrEnum):
     STARTUP_FAILED = "startup_failed"
 
 
+class User(SQLModel, table=True):
+    """Someone who can sign in. Admins see every job and manage users; members see only their
+    own jobs. The bootstrap owner is the user named `admin` (OWNER_NAME in thinair.users)."""
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    is_admin: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
+    disabled_at: datetime | None = None
+
+
 class Repo(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     url: str = Field(index=True, unique=True)
@@ -69,6 +80,8 @@ class Job(SQLModel, table=True):
     commit_sha: str | None = None
     # For `pr` jobs: the agent job whose patch is turned into a pull request.
     parent_job_id: str | None = Field(default=None, foreign_key="job.id", index=True)
+    # Who the job belongs to (and acts as: agent login, GitHub token policy). None = the owner.
+    user_id: str | None = Field(default=None, foreign_key="user.id", index=True)
     limits: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     error_code: str | None = None
     error_message: str | None = None
@@ -129,6 +142,7 @@ class ApiToken(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     name: str
     token_hash: str = Field(index=True, unique=True)
+    user_id: str | None = Field(default=None, foreign_key="user.id", index=True)  # None = owner
     created_at: datetime = Field(default_factory=utcnow)
     last_used_at: datetime | None = None
     revoked_at: datetime | None = None

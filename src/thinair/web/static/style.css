@@ -52,6 +52,8 @@ code { font-size: 0.9em; }
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   background: var(--card); border-bottom: 1px solid var(--line);
 }
+.bar-end { display: flex; align-items: center; gap: 12px; }
+.who { color: var(--muted); font-size: 0.9em; }
 .brand { font-weight: 700; text-decoration: none; color: var(--fg); letter-spacing: 0.02em; }
 
 label { display: block; font-weight: 600; margin: 0.8rem 0 0.3rem; }
