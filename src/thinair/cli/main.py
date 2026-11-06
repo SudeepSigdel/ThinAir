@@ -447,3 +447,36 @@ def runner_start(
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
         typer.echo("Runner stopped.")
+
+
+@app.command()
+def doctor(
+    offline: bool = typer.Option(False, "--offline", help="Skip the GitHub token check online"),
+) -> None:
+    """Check this install (Docker, database, disk, login, phone access, ...) and suggest fixes."""
+    from thinair.doctor import render, run_checks
+
+    _utf8_output()
+    checks = run_checks(online=not offline)
+    typer.echo(render(checks))
+    raise typer.Exit(1 if any(c.status == "fail" for c in checks) else 0)
+
+
+@app.command()
+def images() -> None:
+    """Prepare the sandbox images now (the first job would otherwise do it)."""
+    from thinair.project.prepare import BUILDABLE_IMAGES, ensure_image
+
+    _utf8_output()
+    mgr = SandboxManager()
+
+    async def _all() -> None:
+        for stack in BUILDABLE_IMAGES:
+            tag = await ensure_image(mgr, stack, typer.echo)
+            typer.echo(f"ready: {tag}")
+
+    try:
+        asyncio.run(_all())
+    except SandboxError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e

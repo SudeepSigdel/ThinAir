@@ -36,9 +36,10 @@ You need a Linux machine (a 1–4 GB VM is enough, ARM or x86) or a desktop with
 curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh
 ```
 
-The installer puts everything in `~/thinair`, creates your login token and starts Thinair from
-ready-made images, so nothing is built on your machine. At the end it prints the address and the
-token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
+The installer puts everything in `~/thinair`, creates your login token, starts Thinair from
+ready-made images (nothing is built on your machine), prepares the sandbox images so the first job
+starts right away, and runs `thinair doctor` to check the setup. At the end it prints the address
+and the token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
 later to upgrade; your settings are kept. You can read the script first:
 `curl -fsSL .../install.sh -o install.sh && less install.sh && sh install.sh`.
 
@@ -252,6 +253,8 @@ thinair token create|list|revoke manage API tokens (--user NAME for someone else
 thinair user add|list|disable    manage users (see "Several users")
 thinair runner add|list|disable  manage remote runners (on the server)
 thinair runner start             run profile jobs for a server (on the runner machine)
+thinair doctor                   check the install and print how to fix problems
+thinair images                   prepare the sandbox images now (else the first job does it)
 ```
 
 The HTTP API is documented at `/docs` on your server (log in there with the same token).
@@ -333,6 +336,12 @@ runs. Memory limits are set on every service. Measured numbers are in
 [docs/footprint.md](docs/footprint.md).
 
 ## Troubleshooting
+
+Start with `thinair doctor` (with Compose: `cd ~/thinair && docker compose exec thinair thinair
+doctor`). It checks Docker, the database, disk space, your login token, agent logins, phone
+access, the GitHub token and Telegram settings, and says how to fix each problem. It changes
+nothing; the only thing it sends anywhere is a check of your GitHub token, to GitHub
+(`--offline` skips it).
 
 - **"Cannot reach the Docker daemon"**: Docker isn't running, or `THINAIR_DOCKER_HOST` is wrong.
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set

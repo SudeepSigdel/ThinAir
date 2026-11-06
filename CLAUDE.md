@@ -293,6 +293,11 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   ~/thinair-runner, `.env.runner` from env or prompts on /dev/tty, https required. `THINAIR_RAW_URL=file:///repo`
   for offline installs and tests. Tested in `docker:cli` (busybox ash) with the repo mounted read-only, against a
   locally tagged image: fresh install, re-run/upgrade, runner mode, input checks, a real profile job.
+  After startup it runs `thinair images` (builds python/node/git sandbox images; deliberately NOT published
+  prebuilt: they are base image + one user layer, so the download is the cost either way) and `thinair doctor`.
+- `thinair doctor` (`src/thinair/doctor.py`): read-only checks -> `Check(status, name, detail, fix)`, exit 1 on any
+  fail. Must not create the SQLite file (`_db_missing`). Only network call: GitHub `GET /rate_limit` with the token
+  (`--offline` skips). Tests use a fake Docker client (`tests/test_doctor.py`).
 
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
