@@ -173,6 +173,37 @@ the project's own hooks and agent definitions, which is what we want for reposit
 control. A copy of either config for another ACP agent (e.g. Codex via
 `@agentclientprotocol/codex-acp`) needs only `install`, `command` and the login settings.
 
+## Agents from the ACP registry
+
+`thinair agent add <id>` writes a config from the official
+[ACP registry](https://github.com/agentclientprotocol/registry) (see the README). npm agents are
+installed with `npm install -g <package@version>` and started with the package's own command;
+agents shipped as release archives are downloaded in a separate build stage, checked against
+the registry's sha256 when it lists one, and unpacked into `/opt/thinair-agent`. `HOME` points
+into the agent's login volume, so whatever the agent saves when you log in is kept, per user.
+
+Checked live on 2026-11-07 (real image built from the generated config, one prompt, **no
+account**, `-test` login volumes):
+
+| Agent | How it's installed | Result |
+|---|---|---|
+| GitHub Copilot 1.0.106 (`github-copilot-cli`) | npm `@github/copilot`, `copilot --acp` | Image built in 77 s; ACP session started (`Copilot 1.0.106`); `session/new` -> `-32000 Authentication required`, shown as the login hint (exit 3) |
+| OpenCode 2.2.5 (`opencode`) | release archive (sha256 checked), `opencode acp` | Image built in 75 s; ACP session started (`OpenCode 2.2.5`) and it **answered without any login**: OpenCode falls back to its own free models. Add your provider's key or log in (`thinair auth opencode`) to use your own account |
+
+Not checked yet (the check was stopped when this PC ran low on memory): codex-acp, cursor,
+goose, qwen-code and the rest. They are generated the same way; report any that fail to start.
+
+## Conversations
+
+With `interactive` (the phone's **Keep the conversation open**), the driver keeps the ACP
+session open after each turn and reads commands from its stdin (Thinair attaches to the
+container's stdin only): another message, an answer to a permission request, `stop`
+(`session/cancel`) or `end`. With `ask_permissions` the agent's `session/request_permission`
+calls are shown on the phone with the agent's own options instead of being allowed
+automatically. Nothing is allowed without an answer; after `THINAIR_AGENT_IDLE_S` an open
+request is cancelled and a waiting conversation ends. Only ACP agents can do this: the CLI
+configs run one task in headless mode.
+
 ## Adding an agent
 
 Drop `<id>.yaml` into `$THINAIR_DATA_DIR/agents/` (`/data/agents/` in Docker). A file whose id

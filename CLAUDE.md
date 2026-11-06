@@ -256,7 +256,8 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
 - `AgentConfig.download` (+ `install` now optional; one of them required): a build stage FROM python:3.12-slim runs
   a base64-embedded fetch script (urllib, sha256 check when given, tarfile `filter="data"` / zipfile, exec bits
   kept), then `COPY --from=thinair-fetch /opt/thinair-agent`. No download tool needed in the agent image.
-- All 43 Linux-installable registry agents generate valid configs (2026-11-07). Live image + ACP checks: see
+- All 43 Linux-installable registry agents generate valid configs (2026-11-07). Live: Copilot (auth hint OK) and
+  OpenCode (download path; answers with no login via its free models) verified; others unchecked, see
   docs/agents.md.
 
 ## Agent conversations (phase 4)
