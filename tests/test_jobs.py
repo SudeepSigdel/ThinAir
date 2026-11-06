@@ -423,3 +423,45 @@ async def test_log_lines_are_batched_and_other_events_flush_them_in_order() -> N
         capped.emit(job.id, EventType.LOG, {"line": f"y{i}"})
     lines = [e.data.get("line", "") for e in events_of(job.id)]
     assert lines[-1].startswith("[thinair] log limit reached") and len(lines) == 11
+
+
+# ---- log retention ------------------------------------------------------------------------
+def test_old_logs_are_removed_but_results_and_history_stay() -> None:
+    from datetime import timedelta
+
+    from thinair.retention import remove_old_logs
+
+    store = EventStore()
+    with session_scope() as s:
+        repo = Repo(url=URL, name="demo")
+        s.add(repo)
+        s.commit()
+        now = utcnow()
+        old = Job(
+            repo_id=repo.id,
+            kind=JobKind.PROFILE,
+            status=JobStatus.SUCCEEDED,
+            finished_at=now - timedelta(days=31),
+        )
+        recent = Job(
+            repo_id=repo.id,
+            kind=JobKind.PROFILE,
+            status=JobStatus.SUCCEEDED,
+            finished_at=now - timedelta(days=29),
+        )
+        running = Job(repo_id=repo.id, kind=JobKind.PROFILE, status=JobStatus.RUNNING)
+        s.add_all([old, recent, running])
+        s.commit()
+    for job in (old, recent, running):
+        store.emit(job.id, EventType.LOG, {"line": "pip install ..."})
+        store.emit(job.id, EventType.PROFILE_RUN, {"cpus": 1})
+        store.emit(job.id, EventType.STATUS, {"status": "succeeded"})
+
+    assert remove_old_logs(0) == 0  # 0 = keep forever
+    assert remove_old_logs(30, batch=1) == 1
+    assert [e.type for e in events_of(old.id)] == [EventType.PROFILE_RUN, EventType.STATUS]
+    assert len(events_of(recent.id)) == 3 and len(events_of(running.id)) == 3
+    with session_scope() as s:
+        assert s.get(Job, old.id).logs_removed_at is not None
+        assert s.get(Job, recent.id).logs_removed_at is None
+    assert remove_old_logs(30) == 0  # already cleaned jobs are skipped

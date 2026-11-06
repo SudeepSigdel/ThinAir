@@ -272,10 +272,10 @@ never reads it, never copies it, and never sends it anywhere. If you use a token
 `claude setup-token` instead, it sits in your server's `.env` and is passed only into that agent's
 container, masked in every log.
 
-**Can I share my Thinair server with friends so they use my subscription?** No, and don't.
-Thinair is single-user by design. Every agent run uses the login of the person who set it up, so
-anyone you give a token to would be using *your* account. Each person should run their own
-Thinair with their own login. Check your plan's terms for automated use.
+**Can I share my Thinair server with friends so they use my subscription?** No. You can share
+the *server* (see "Several users"), but each person logs in to the agents with their own account,
+in their own volume, and the API keys in your `.env` only reach your jobs. Check your plan's terms
+for automated use.
 
 **Is my login safe from the code the agent works on?** Not fully. To work unattended the agent
 runs without approval prompts inside the sandbox. A malicious repository could trick it into
@@ -302,6 +302,11 @@ THINAIR_DATABASE_URL=postgresql+psycopg://thinair:password@db.example.com:5432/t
 
 Then `docker compose up -d --build`. Tables are created and migrated at startup, as with SQLite.
 There is no automatic copy from an existing SQLite file.
+
+**Old logs are cleaned up.** 30 days after a job finishes, its log lines (by far the largest part
+of the database) are deleted. The job, its result, profile report, diff and agent messages stay,
+and the job page says the log was removed. Change the period with
+`THINAIR_LOG_RETENTION_DAYS` (`0` keeps logs forever). The cleanup runs at startup and once a day.
 
 ## Footprint
 

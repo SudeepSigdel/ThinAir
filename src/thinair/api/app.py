@@ -1,5 +1,7 @@
 """FastAPI application factory."""
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +19,7 @@ from thinair.db.session import get_engine, session_scope
 from thinair.jobs.executors import default_executors
 from thinair.jobs.service import Executor, JobService
 from thinair.notify import NotifyConfigError, notifier_from_settings
+from thinair.retention import retention_loop
 from thinair.runners import RunnerHub, make_remote_executor
 
 log = logging.getLogger("thinair")
@@ -63,9 +66,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.runners = hub
     await jobs.start()
     app.state.jobs = jobs
+    cleanup = None
+    if settings.log_retention_days > 0:
+        cleanup = asyncio.create_task(
+            retention_loop(settings.log_retention_days), name="thinair-log-retention"
+        )
     try:
         yield
     finally:
+        if cleanup is not None:
+            cleanup.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup
         await jobs.stop()
 
 

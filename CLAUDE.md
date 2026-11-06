@@ -146,6 +146,9 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   Streams wait per job (`_waiters[job_id]`), so a busy job no longer wakes every open stream. Index
   `(job_id, seq)` (migration 0005) serves every read; the old job_id-only index sorted up to 50k rows per fetch.
   SQLite runs `synchronous=NORMAL` (safe with WAL).
+- Retention (`src/thinair/retention.py`): `THINAIR_LOG_RETENTION_DAYS` (30, 0 = off). Startup + daily task deletes only
+  LOG events of finished jobs older than that and sets `Job.logs_removed_at` (migration 0006). Never delete STATUS
+  events: the web UI loads a finished job's report/result only when the stream replays its final status event.
 - `events.EventStore`: per-job `seq` (= SSE `id:`), stored in SQLite, `stream(job_id, after)` replays then follows live,
   keep-alive every 15 s, ends when the job is finished. Order matters: emit the final STATUS event *before* writing the
   terminal job status; streams read "finished" *before* fetching. Log events are capped per job; lifecycle events never are.

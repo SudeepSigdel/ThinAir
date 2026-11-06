@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     agent_egress: Literal["allowlist", "open"] = "allowlist"
     agent_egress_extra_hosts: str = ""
 
+    # Log lines of finished jobs are deleted after this many days (0 = keep forever). Results,
+    # profile reports, status history and agent messages are kept.
+    log_retention_days: int = Field(default=30, ge=0)
+
     # Remote runners (other machines that run profile jobs; see thinair/runners.py):
     # auto = a profile job goes to a runner if one is waiting for work, else runs here (and comes
     #        back here if no runner takes it within runner_claim_timeout_s);

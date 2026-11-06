@@ -263,6 +263,11 @@ async function showJob(id) {
     return;
   }
   renderJob(job);
+  if (job.logs_removed_at) {
+    $("log").append(
+      el("div", { class: "sys", text: "[thinair] The log lines were removed (older than the retention period). The result is kept." })
+    );
+  }
   follow(id);
 }
 

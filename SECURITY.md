@@ -67,4 +67,5 @@ agents) inside Docker containers.
   runs still have open network access. An allowlisted host that accepts uploads (for example an
   API with an attacker's own key) can still receive data, so the allowlist narrows exfiltration;
   it does not make a malicious repository safe.
-- Do not share one Thinair server between people. Every agent run uses the owner's login.
+- Share a server only with people you trust with the machine (see the first point above): each
+  user gets their own agent logins, but all sandboxes share one Docker host.

@@ -73,6 +73,7 @@ class JobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    logs_removed_at: datetime | None = None  # log lines deleted by the retention cleanup
     finished: bool
 
     @classmethod

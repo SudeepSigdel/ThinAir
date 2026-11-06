@@ -103,6 +103,8 @@ class Job(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # When this job's log lines were deleted by the retention cleanup (see thinair/retention.py).
+    logs_removed_at: datetime | None = None
 
 
 class JobEvent(SQLModel, table=True):
