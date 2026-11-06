@@ -1,0 +1,201 @@
+#!/bin/sh
+# Thinair installer. Needs only Docker (with the Compose plugin) and curl or wget.
+#
+#   curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh
+#
+# Server (default): downloads docker-compose.yml into ~/thinair, writes a .env with a fresh
+# admin token (first time only), downloads the ready-made images and starts Thinair.
+# Runner:  ... | sh -s -- --runner   sets up a remote runner in ~/thinair-runner instead.
+# Run it again to upgrade: your .env is kept, the images are updated.
+#
+# Settings (environment variables, all optional):
+#   THINAIR_DIR       install folder           (default ~/thinair, runner: ~/thinair-runner)
+#   THINAIR_PORT      port on this machine     (default 8080; first install only)
+#   THINAIR_VERSION   image tag                (default latest; e.g. 0.2.0 or edge)
+#   THINAIR_SERVER_URL, THINAIR_RUNNER_TOKEN   runner only; asked for when missing
+set -eu
+
+RAW_URL="${THINAIR_RAW_URL:-https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main}"
+IMAGE_NAME="${THINAIR_IMAGE:-ghcr.io/sudeepsigdel/thinair}"
+MODE=server
+case "${1:-}" in
+  --runner) MODE=runner ;;
+  "") ;;
+  -h | --help)
+    sed -n '2,16p' "$0" 2>/dev/null || echo "See https://github.com/SudeepSigdel/ThinAir"
+    exit 0
+    ;;
+  *) printf 'Unknown option: %s (use --runner or nothing)\n' "$1" >&2; exit 2 ;;
+esac
+
+say() { printf '%s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
+die() {
+  printf '\nError: %s\n' "$*" >&2
+  exit 1
+}
+
+fetch() { # url file (file:// works too, for offline installs and tests)
+  case "$1" in
+    file://*)
+      cp "${1#file://}" "$2"
+      return
+      ;;
+  esac
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    die "Neither curl nor wget is installed."
+  fi
+}
+
+ask() { # prompt var: read from the terminal even when this script comes through a pipe
+  [ -r /dev/tty ] || die "Set $2 (no terminal to ask for it)."
+  printf '%s' "$1" >/dev/tty
+  # shellcheck disable=SC2034 # used through eval below
+  IFS= read -r answer </dev/tty || die "Set $2."
+  eval "$2=\$answer"
+}
+
+random_token() { # like `thinair init`: thinair_ + 32 random bytes, URL-safe base64
+  printf 'thinair_%s' "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
+}
+
+# Everything runs inside main, called on the last line: if a `curl | sh` download breaks off
+# halfway, the shell has only read definitions and runs nothing.
+main() {
+# ---- checks -----------------------------------------------------------------------------------
+step "Checking Docker"
+command -v docker >/dev/null 2>&1 ||
+  die "Docker is not installed. Install it from https://docs.docker.com/engine/install/ and run this again."
+docker compose version >/dev/null 2>&1 ||
+  die "The Docker Compose plugin is missing. See https://docs.docker.com/compose/install/linux/"
+if ! docker info >/dev/null 2>&1; then
+  die "Docker is installed but not reachable. Is it running? On Linux either run this with sudo, or
+add yourself to the docker group (sudo usermod -aG docker \"\$USER\"), log out and back in, and
+run this again."
+fi
+say "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), $(docker compose version --short 2>/dev/null || echo 'compose')"
+
+if [ "$MODE" = runner ]; then
+  DIR="${THINAIR_DIR:-$HOME/thinair-runner}"
+  COMPOSE_FILE_NAME=docker-compose.runner.yml
+else
+  DIR="${THINAIR_DIR:-$HOME/thinair}"
+  COMPOSE_FILE_NAME=docker-compose.yml
+fi
+mkdir -p "$DIR"
+cd "$DIR"
+umask 077 # settings files hold secrets
+
+# ---- files ------------------------------------------------------------------------------------
+step "Downloading $COMPOSE_FILE_NAME into $DIR"
+fetch "$RAW_URL/$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new" ||
+  die "Could not download $RAW_URL/$COMPOSE_FILE_NAME"
+if [ -f "$COMPOSE_FILE_NAME" ] && ! cmp -s "$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new"; then
+  cp "$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.bak"
+  say "Your previous $COMPOSE_FILE_NAME was saved as $COMPOSE_FILE_NAME.bak"
+fi
+mv "$COMPOSE_FILE_NAME.new" "$COMPOSE_FILE_NAME"
+chmod 644 "$COMPOSE_FILE_NAME"
+
+NEW_TOKEN=""
+if [ "$MODE" = server ]; then
+  if [ -f .env ]; then
+    say "Keeping your settings in $DIR/.env"
+  else
+    NEW_TOKEN="$(random_token)"
+    cat >.env <<EOF
+# Created by the Thinair installer. Every option: https://github.com/SudeepSigdel/ThinAir/blob/main/.env.example
+# Your login token for the web app (keep it secret).
+THINAIR_ADMIN_TOKEN=$NEW_TOKEN
+# Who can connect: 127.0.0.1 = only this machine (use a tunnel or the https profile for phones).
+THINAIR_BIND=127.0.0.1
+THINAIR_PORT=${THINAIR_PORT:-8080}
+THINAIR_MAX_CONCURRENT_JOBS=1
+EOF
+    say "Created $DIR/.env with a new admin token"
+  fi
+else
+  if [ -f .env.runner ]; then
+    say "Keeping your runner settings in $DIR/.env.runner"
+  else
+    server="${THINAIR_SERVER_URL:-}"
+    token="${THINAIR_RUNNER_TOKEN:-}"
+    [ -n "$server" ] || ask "Thinair server address (e.g. https://thinair.example.com): " server
+    if [ -z "$token" ]; then
+      say "Create a runner secret on the server with:  thinair runner add <name>"
+      ask "Runner secret (thinair_runner_...): " token
+    fi
+    case "$token" in thinair_runner_*) ;; *) die "That is not a runner secret (it starts with thinair_runner_)." ;; esac
+    case "$server" in https://* | http://localhost* | http://127.0.0.1*) ;;
+      *) die "The server address must start with https:// (the secret is sent with every request)." ;;
+    esac
+    printf 'THINAIR_SERVER_URL=%s\nTHINAIR_RUNNER_TOKEN=%s\n' "$server" "$token" >.env.runner
+    say "Created $DIR/.env.runner"
+  fi
+fi
+
+# ---- images and start -------------------------------------------------------------------------
+[ -n "${THINAIR_VERSION:-}" ] && export THINAIR_VERSION
+IMAGE="$IMAGE_NAME:${THINAIR_VERSION:-latest}"
+step "Downloading the images (first time: about 100 MB)"
+if ! docker compose -f "$COMPOSE_FILE_NAME" pull; then
+  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    say "Could not download updates; using the image already on this machine ($IMAGE)."
+  else
+    die "Could not download $IMAGE. Check your internet connection and run this again."
+  fi
+fi
+
+step "Starting Thinair"
+docker compose -f "$COMPOSE_FILE_NAME" up -d --remove-orphans
+
+if [ "$MODE" = runner ]; then
+  i=0
+  until docker compose -f "$COMPOSE_FILE_NAME" logs runner 2>/dev/null | grep -q "Runner started"; do
+    i=$((i + 1))
+    [ "$i" -le 30 ] || die "The runner did not start. See: cd $DIR && docker compose -f $COMPOSE_FILE_NAME logs runner"
+    sleep 2
+  done
+  say ""
+  say "Runner running. It connects to the server and waits for profile jobs."
+  say "  Logs:      cd $DIR && docker compose -f $COMPOSE_FILE_NAME logs -f runner"
+  say "  Upgrade:   run this installer again with --runner"
+  exit 0
+fi
+
+i=0
+until docker compose exec -T thinair python -c \
+  "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz')" >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -le 45 ] || die "Thinair did not come up. See: cd $DIR && docker compose logs thinair"
+  sleep 2
+done
+
+port="$(sed -n 's/^THINAIR_PORT=//p' .env | tail -n 1)"
+bind="$(sed -n 's/^THINAIR_BIND=//p' .env | tail -n 1)"
+say ""
+say "Thinair is running."
+say ""
+say "  Open:      http://localhost:${port:-8080}   (on this machine)"
+if [ -n "$NEW_TOKEN" ]; then
+  say "  Token:     $NEW_TOKEN"
+  say "             (log in with it; it is also saved in $DIR/.env)"
+else
+  say "  Token:     THINAIR_ADMIN_TOKEN in $DIR/.env"
+fi
+say ""
+say "Next steps:"
+if [ "${bind:-127.0.0.1}" = 127.0.0.1 ]; then
+  say "  - Phone access: a tunnel (Tailscale or Cloudflare) to http://localhost:${port:-8080}, or your"
+  say "    own domain: THINAIR_DOMAIN=... in .env, then: docker compose --profile https up -d"
+  say "    Details: https://github.com/SudeepSigdel/ThinAir#using-it-from-your-phone"
+fi
+say "  - Log in an agent:  cd $DIR && docker compose exec thinair thinair auth claude --print-command"
+say "  - Upgrade later:    run this installer again"
+}
+
+main "$@"

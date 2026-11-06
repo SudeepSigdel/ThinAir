@@ -22,17 +22,18 @@ docker compose exec thinair thinair runner add homebox
 
 This prints a secret starting with `thinair_runner_`, shown once.
 
-On the runner machine, get Thinair and create `.env.runner`:
+On the runner machine (it needs Docker), run the installer in runner mode. It asks for the
+server's address and the secret:
 
 ```sh
-git clone https://github.com/SudeepSigdel/ThinAir.git thinair && cd thinair
-cat > .env.runner <<'EOF'
-THINAIR_SERVER_URL=https://thinair.example.com
-THINAIR_RUNNER_TOKEN=thinair_runner_...
-EOF
-docker compose -f docker-compose.runner.yml up -d
-docker compose -f docker-compose.runner.yml logs -f runner   # "Runner started; waiting ..."
+curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh -s -- --runner
 ```
+
+It sets everything up in `~/thinair-runner` (settings in `.env.runner`, readable only by you)
+and starts the runner. Run it again later to upgrade. To do the same by hand: download
+`docker-compose.runner.yml`, write `.env.runner` with `THINAIR_SERVER_URL=https://...` and
+`THINAIR_RUNNER_TOKEN=thinair_runner_...`, then `docker compose -f docker-compose.runner.yml
+pull` and `... up -d`.
 
 Without Compose, use `uv run thinair runner start --server https://...` with
 `THINAIR_RUNNER_TOKEN` set in the environment. The secret is never accepted on the command line,

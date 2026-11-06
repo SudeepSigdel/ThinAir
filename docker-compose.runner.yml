@@ -5,7 +5,8 @@
 #   2. Here, in .env.runner:
 #        THINAIR_SERVER_URL=https://thinair.example.com
 #        THINAIR_RUNNER_TOKEN=thinair_runner_...
-#   3. docker compose -f docker-compose.runner.yml up -d
+#   3. docker compose -f docker-compose.runner.yml pull && docker compose -f docker-compose.runner.yml up -d
+#      (or `sh install.sh --runner`, which does all of this)
 #
 # See docs/runners.md.
 services:
@@ -26,6 +27,7 @@ services:
     mem_limit: 32m
 
   runner:
+    image: ${THINAIR_IMAGE:-ghcr.io/sudeepsigdel/thinair}:${THINAIR_VERSION:-latest}
     build:
       context: .
       args:

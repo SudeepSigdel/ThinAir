@@ -27,23 +27,41 @@ Private GitHub repositories and opening pull requests work with a GitHub token (
 Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
 Gemini CLI. Several people can share one server, each with their own jobs and agent logins.
 
-## Quickstart (about 5 minutes)
+## Quickstart (about 2 minutes)
 
-You need a Linux machine (a 1–4 GB VM is enough, ARM or x86) or a desktop with Docker, plus
-[Docker](https://docs.docker.com/engine/install/) with the Compose plugin.
+You need a Linux machine (a 1–4 GB VM is enough, ARM or x86) or a desktop with
+[Docker](https://docs.docker.com/engine/install/) and its Compose plugin. Then run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh
+```
+
+The installer puts everything in `~/thinair`, creates your login token and starts Thinair from
+ready-made images, so nothing is built on your machine. At the end it prints the address and the
+token. Open <http://localhost:8080> and paste the token to log in. Run the same command again
+later to upgrade; your settings are kept. You can read the script first:
+`curl -fsSL .../install.sh -o install.sh && less install.sh && sh install.sh`.
+
+Lost the token? It is `THINAIR_ADMIN_TOKEN` in `~/thinair/.env`, or create another with
+`cd ~/thinair && docker compose exec thinair thinair token create --name phone`.
+
+The first job builds the small sandbox images (Python, Node, git). Later jobs reuse them.
+
+<details>
+<summary>Without the installer (from the source)</summary>
 
 ```sh
 git clone https://github.com/SudeepSigdel/ThinAir.git
 cd ThinAir
 cp .env.example .env              # optional: every setting has a sensible default
-docker compose up -d --build      # first build takes a few minutes
+docker compose pull               # ready-made images; or `docker compose build` to build them
+docker compose up -d
 docker compose logs thinair | grep -A3 "admin token"
 ```
 
-Copy the token from the log (it is shown only once) and open <http://localhost:8080>. Paste the
-token to log in. Lost it? Run `docker compose exec thinair thinair token create --name phone`.
-
-The first job builds the small sandbox images (Python, Node, git). Later jobs reuse them.
+Copy the token from the log (it is shown only once). To pin a version, set `THINAIR_VERSION`
+(for example `0.2.0`, or `edge` for the latest commit) in `.env`.
+</details>
 
 ### Using it from your phone
 
@@ -159,8 +177,8 @@ takes requests. The runner connects out to the server, so it needs no open port:
 
 ```sh
 docker compose exec thinair thinair runner add homebox     # on the server: prints a secret
-# on the runner machine: put THINAIR_SERVER_URL and THINAIR_RUNNER_TOKEN in .env.runner, then
-docker compose -f docker-compose.runner.yml up -d
+# on the runner machine (asks for the server address and that secret):
+curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | sh -s -- --runner
 ```
 
 By default (`THINAIR_RUNNER_PLACEMENT=auto`) a profile job goes to a runner when one is free and

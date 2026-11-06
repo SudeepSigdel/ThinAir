@@ -22,6 +22,9 @@ services:
     mem_limit: 32m
 
   thinair:
+    # Ready-made image (x86 + ARM), fetched with `docker compose pull`. With the source checked
+    # out, `docker compose up -d --build` builds it locally instead.
+    image: ${THINAIR_IMAGE:-ghcr.io/sudeepsigdel/thinair}:${THINAIR_VERSION:-latest}
     build:
       context: .
       args:

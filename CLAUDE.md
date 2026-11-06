@@ -279,6 +279,21 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   are undocumented -> open. Gemini: undocumented -> open. Settings `THINAIR_AGENT_EGRESS=allowlist|open`,
   `THINAIR_AGENT_EGRESS_EXTRA_HOSTS`. Tests: `test_egress.py` (in-process proxy), `test_egress_docker.py`.
 
+## Releases and install (`.github/workflows/release.yml`, `install.sh`)
+- Workflow pushes multi-arch (amd64 + arm64, QEMU) server images with `EXTRAS=postgres` to
+  `ghcr.io/<owner>/thinair` (metadata-action lowercases): tag `vX.Y.Z` -> `X.Y.Z`, `X.Y`, `latest`; main -> `edge`.
+  Action majors verified 2026-11-06: checkout v7, setup-qemu v4, setup-buildx v4, login v4, metadata v6, build-push v7.
+  `latest` exists only after the first `v*` tag.
+- Compose files have BOTH `image: ${THINAIR_IMAGE}:${THINAIR_VERSION:-latest}` and `build:`. Verified: with a
+  missing image, `docker compose up` BUILDS (needs the source) instead of pulling, so always `docker compose pull`
+  first (the installer does). `up --build` from a checkout still builds locally.
+- `install.sh` (POSIX sh, shellcheck-clean, keep it so): body in `main()` called on the last line (a truncated
+  `curl | sh` runs nothing). Server: ~/thinair, writes `.env` once (`thinair_` + 32 urandom bytes, umask 077), pull
+  (falls back to a local image), up, waits on `/healthz` via `compose exec`, prints URL + token. `--runner`:
+  ~/thinair-runner, `.env.runner` from env or prompts on /dev/tty, https required. `THINAIR_RAW_URL=file:///repo`
+  for offline installs and tests. Tested in `docker:cli` (busybox ash) with the repo mounted read-only, against a
+  locally tagged image: fresh install, re-run/upgrade, runner mode, input checks, a real profile job.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.
