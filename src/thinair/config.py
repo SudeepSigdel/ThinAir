@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     agent_egress: Literal["allowlist", "open"] = "allowlist"
     agent_egress_extra_hosts: str = ""
 
+    # Unfinished (queued or running) jobs a *member* may have at once; 0 = no limit. Admins are
+    # never limited. Override per person: `thinair user limit <name> <n>`.
+    member_job_limit: int = Field(default=5, ge=0)
+
     # Log lines of finished jobs are deleted after this many days (0 = keep forever). Results,
     # profile reports, status history and agent messages are kept.
     log_retention_days: int = Field(default=30, ge=0)

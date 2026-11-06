@@ -73,6 +73,14 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (owner/admin, or `THINAIR_GITHUB_TOKEN_FOR_MEMBERS`) -> `prepare_workspace(github_auth=...)`; PR refused 403
   `github_not_allowed` at submit and again in `pr_executor`. CLI: `thinair user add|list|disable`,
   `token create --user`, `auth <agent> --user`.
+- Job limit: members may have `job_limit(user)` unfinished jobs (`User.max_active_jobs`, None -> THINAIR_MEMBER_JOB_LIMIT=5,
+  0 = none; owner/admins never). Checked in `JobService.submit` (PrepareError) and `submit_pr` (PRError), both
+  `too_many_jobs` -> HTTP 429. `POST /api/users/{name}/limit`, `thinair user limit NAME N|default`.
+- Pairing (`src/thinair/pairing.py`, table `PairingCode`, migration 0007): `thinair qr [--user]` prints (segno,
+  terminal, compact) `<THINAIR_PUBLIC_URL>/#pair=thinair_pair_...`; one-time, 10 min, SHA-256 stored. Open
+  `POST /api/pair` (throttled like login) creates a NEW token and sets the session cookie (`_set_session`, shared
+  with login). app.js `pairFromLink()` runs before `route()` and `history.replaceState`s the code away. Verified:
+  OpenCV decodes the terminal rendering (dark-terminal colours), Edge smoke 7/7, redeem through Caddy HTTPS.
 - Testing gotcha: API tests acting as several users must send every request through the ONE lifespan TestClient
   (per-request headers, see `As` in test_users.py). A second TestClient runs on another event loop and never wakes
   the job workers, so jobs stay queued.

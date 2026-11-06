@@ -118,3 +118,52 @@ def auth_volume_name(agent_id: str, user: User | None) -> str:
 
 def github_token_allowed(user: User | None) -> bool:
     return user is None or user.is_admin or get_settings().github_token_for_members
+
+
+# ---- how many unfinished jobs a member may have -------------------------------------------------
+def job_limit(user: User | None) -> int | None:
+    """Unfinished jobs this user may have at once, or None for no limit. The owner and admins are
+    never limited; members get their own `max_active_jobs`, else THINAIR_MEMBER_JOB_LIMIT."""
+    if user is None or user.is_admin:
+        return None
+    limit = user.max_active_jobs
+    if limit is None:
+        limit = get_settings().member_job_limit
+    return limit or None  # 0 = no limit
+
+
+def set_job_limit(session: Session, name: str, limit: int | None) -> User:
+    """Set a member's limit: a number (0 = no limit) or None for the server default."""
+    if limit is not None and limit < 0:
+        raise UserError("bad_limit", "The limit must be 0 (no limit) or more.")
+    user = get_user(session, name)
+    if user is None:
+        raise UserError("user_not_found", f"No user called {name!r}.")
+    user.max_active_jobs = limit
+    session.add(user)
+    session.commit()
+    return user
+
+
+def too_many_jobs(session: Session, user_id: str | None) -> str | None:
+    """A phone-readable refusal if this user is at their limit, else None."""
+    from thinair.db.models import JobStatus
+
+    if user_id is None:
+        return None
+    user = session.get(User, user_id)
+    limit = job_limit(user)
+    if limit is None:
+        return None
+    active = session.exec(
+        select(Job.id).where(
+            Job.user_id == user_id,
+            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),  # type: ignore[attr-defined]
+        )
+    ).all()
+    if len(active) < limit:
+        return None
+    return (
+        f"You already have {len(active)} unfinished job(s), the most allowed here ({limit}). "
+        "Wait for one to finish or cancel one."
+    )

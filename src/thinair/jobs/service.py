@@ -146,7 +146,12 @@ class JobService:
             raise PrepareError(
                 "unsupported_job", f"Jobs of kind {kind.value!r} are not available yet"
             )
+        from thinair.users import too_many_jobs
+
         with session_scope() as s:
+            refusal = too_many_jobs(s, user_id)
+            if refusal:
+                raise PrepareError("too_many_jobs", refusal)
             repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
             if repo is None:
                 name = source.url.split("/")[-1].removesuffix(".git")
@@ -170,7 +175,7 @@ class JobService:
         """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
         from thinair.db.models import JobResult
         from thinair.jobs.pr import PRError, check_pr_possible, require_token
-        from thinair.users import github_token_allowed, job_user
+        from thinair.users import github_token_allowed, job_user, too_many_jobs
 
         if JobKind.PR not in self._executors:
             raise PRError("unsupported_job", "Opening pull requests is not available.")
@@ -182,6 +187,9 @@ class JobService:
             assert parent is not None and result is not None
             if not github_token_allowed(job_user(s, parent)):
                 raise PRError("github_not_allowed", GITHUB_NOT_ALLOWED)
+            refusal = too_many_jobs(s, parent.user_id)
+            if refusal:
+                raise PRError("too_many_jobs", refusal)
             if result.pr_url:
                 raise PRError("pr_exists", f"A pull request is already open: {result.pr_url}")
             active = s.exec(

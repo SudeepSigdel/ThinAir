@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from thinair.auth import verify_token
 from thinair.db.session import session_scope
@@ -146,16 +146,47 @@ class LoginBody(BaseModel):
 @router.post("/login", status_code=status.HTTP_204_NO_CONTENT)
 def login(body: LoginBody, request: Request, response: Response) -> None:
     _check(request, body.token)
+    _set_session(request, response, body.token)
+
+
+def _set_session(request: Request, response: Response, token: str) -> None:
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     response.set_cookie(
         COOKIE_NAME,
-        body.token,
+        token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
         samesite="strict",
         secure=secure,
         path="/",
     )
+
+
+class PairBody(BaseModel):
+    code: str = Field(max_length=200)
+
+
+@router.post("/pair", status_code=status.HTTP_204_NO_CONTENT)
+def pair(body: PairBody, request: Request, response: Response) -> None:
+    """Sign this browser in with a one-time code from `thinair qr` (a new token of its own)."""
+    from thinair.pairing import redeem
+
+    key = _client_key(request)
+    if _throttled(key):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
+    with session_scope() as session:
+        token = redeem(session, body.code.strip())
+    if token is None:
+        record_failure(key)
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bad_pairing_code",
+                "message": "This QR code has expired or was already used. Create a new one "
+                "with `thinair qr`.",
+            },
+        )
+    _set_session(request, response, token)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

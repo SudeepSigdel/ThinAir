@@ -563,6 +563,29 @@ async function login(ev) {
   }
 }
 
+// A QR code from `thinair qr` opens `/#pair=<one-time code>`. Swap it for a session at once and
+// drop it from the address bar (and so from this history entry).
+async function pairFromLink() {
+  const m = location.hash.match(/^#pair=([A-Za-z0-9_-]{10,200})$/);
+  if (!m) return false;
+  history.replaceState(null, "", location.pathname + location.search);
+  const res = await fetch("/api/pair", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: m[1] }),
+  });
+  if (res.ok) return true;
+  showLogin();
+  showError(
+    "login-error",
+    res.status === 429
+      ? "Too many attempts. Wait a minute and try again."
+      : "This QR code has expired or was already used. Create a new one with `thinair qr`.",
+  );
+  return "failed";
+}
+
 async function logout() {
   await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
   showLogin();
@@ -583,5 +606,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!document.hidden && !$("view-home").hidden) loadJobs();
   });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-  route();
+  pairFromLink().then((paired) => {
+    if (paired !== "failed") route();
+  });
 });

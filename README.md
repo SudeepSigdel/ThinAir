@@ -84,7 +84,13 @@ By hand:
   `THINAIR_DOMAIN=thinair.example.com` in `.env`, open ports 80 and 443, and run
   `docker compose --profile https up -d`. Caddy gets a certificate for you.
 
-Then open the URL on your phone and use "Add to Home Screen". It runs like an app. Jobs keep
+Then sign your phone in by scanning a QR code: run `thinair qr` (with Compose:
+`cd ~/thinair && docker compose exec thinair thinair qr`) and point the phone's camera at it. The
+installer shows one at the end when phone access is set up. The code works once, for 10 minutes,
+and never contains your token: the phone gets a token of its own, which you can revoke on its own
+(`thinair token list`, `thinair token revoke <id>`). Or open the URL and paste your token.
+
+Then use "Add to Home Screen". It runs like an app. Jobs keep
 running on the server when you close it, and the live log picks up where it left off when you
 come back.
 
@@ -177,7 +183,12 @@ docker compose exec thinair thinair auth claude --user alice --print-command
   `thinair token create --name laptop --user alice`. Admins can do the same over the API
   (`/api/users`, see `/docs`).
 - Everyone shares the same job queue and machine limits, and Telegram notifications for every
-  job go to the owner's chat.
+  job go to the owner's chat. So nobody can fill the queue, **a member may have at most 5
+  unfinished jobs** (queued or running) at once. Change the default with
+  `THINAIR_MEMBER_JOB_LIMIT` (`0` = no limit), or per person: `thinair user limit alice 20`
+  (`0` = no limit, `default` = back to the server default). Admins are never limited.
+- **Signing someone's phone in:** `thinair qr --user alice` shows a QR code they scan with their
+  phone's camera (see below).
 
 ## Remote runners
 
@@ -262,6 +273,8 @@ thinair user add|list|disable    manage users (see "Several users")
 thinair runner add|list|disable  manage remote runners (on the server)
 thinair runner start             run profile jobs for a server (on the runner machine)
 thinair doctor                   check the install and print how to fix problems
+thinair qr [--user NAME]         QR code that signs a phone in (one-time, 10 minutes)
+thinair user limit NAME N        max unfinished jobs for a member (0 = none, or `default`)
 thinair images                   prepare the sandbox images now (else the first job does it)
 ```
 

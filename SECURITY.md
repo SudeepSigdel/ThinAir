@@ -43,6 +43,15 @@ agents) inside Docker containers.
   other users' data. Their messages are size-capped and validated, and a runner can only report
   on jobs it currently holds.
 
+- Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is
+  stored) that expires after 10 minutes and works once. It travels in the URL fragment, which
+  browsers never send to servers or proxies, and the app removes it from the address bar at once.
+  Redeeming it creates a new token for that phone; your own token is never in the QR code.
+  Anyone who sees the QR code before it is used can sign in with it, so treat it like a password
+  for those 10 minutes.
+- Members can't fill the shared queue: at most `THINAIR_MEMBER_JOB_LIMIT` (default 5) unfinished
+  jobs each.
+
 **Not protected (know these before you deploy)**
 
 - **Users are not isolated from each other at the machine level.** All jobs share one Docker

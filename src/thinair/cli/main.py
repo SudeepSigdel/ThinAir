@@ -132,10 +132,47 @@ def user_list() -> None:
     """List users."""
     upgrade(get_engine())
     with session_scope() as session:
-        typer.echo(f"{OWNER_NAME:<16} admin   active (owner)")
+        from thinair.users import job_limit
+
+        typer.echo(f"{OWNER_NAME:<16} admin   active    (owner)")
         for u in list_users(session):
             role = "admin" if u.is_admin else "member"
-            typer.echo(f"{u.name:<16} {role:<7} {'disabled' if u.disabled_at else 'active'}")
+            state = "disabled" if u.disabled_at else "active"
+            limit = job_limit(u)
+            jobs = "" if u.is_admin else f"max {limit} unfinished jobs" if limit else "no job limit"
+            if not u.is_admin and u.max_active_jobs is None:
+                jobs += " (default)"
+            typer.echo(f"{u.name:<16} {role:<7} {state:<9} {jobs}")
+
+
+@user_app.command("limit")
+def user_limit(
+    name: str,
+    limit: str = typer.Argument(..., help="A number (0 = no limit) or 'default'"),
+) -> None:
+    """How many unfinished jobs a member may have at once (admins are never limited)."""
+    from thinair.users import set_job_limit
+
+    value: int | None
+    if limit == "default":
+        value = None
+    elif limit.isdigit():
+        value = int(limit)
+    else:
+        typer.echo("Give a number (0 = no limit) or 'default'.", err=True)
+        raise typer.Exit(2)
+    upgrade(get_engine())
+    with session_scope() as session:
+        try:
+            set_job_limit(session, name, value)
+        except UserError as e:
+            typer.echo(e.message, err=True)
+            raise typer.Exit(1) from e
+    default = get_settings().member_job_limit
+    shown = (
+        f"the server default ({default or 'no limit'})" if value is None else value or "no limit"
+    )
+    typer.echo(f"{name}: {shown}")
 
 
 @user_app.command("disable")
@@ -480,3 +517,42 @@ def images() -> None:
     except SandboxError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
+
+
+@app.command()
+def qr(
+    user: str | None = typer.Option(None, "--user", help="Sign the phone in as this user"),
+    url: str | None = typer.Option(
+        None, "--url", help="Address the phone opens (default: THINAIR_PUBLIC_URL)"
+    ),
+) -> None:
+    """Show a QR code that signs a phone in: scan it with the phone's camera.
+
+    It holds a one-time code (valid 10 minutes), never your token; the phone gets a new token
+    of its own, which `thinair token list` shows and `thinair token revoke` can remove.
+    """
+    import segno
+
+    from thinair.pairing import TTL, create_pairing_code, pairing_url
+
+    _utf8_output()
+    base = (url or get_settings().public_url or "").strip()
+    if not base.startswith(("https://", "http://")):
+        typer.echo(
+            "Set up phone access first (THINAIR_PUBLIC_URL, e.g. with the installer's "
+            "THINAIR_PHONE=tailscale), or pass --url https://...",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if base.startswith("http://"):
+        typer.echo("Note: over http:// the phone can't install the app (that needs HTTPS).")
+    upgrade(get_engine())
+    with session_scope() as session:
+        code = create_pairing_code(session, _user_id(session, user))
+    link = pairing_url(base, code)
+    qr_code = segno.make(link, error="m")
+    qr_code.terminal(compact=True, border=2)
+    typer.echo("")
+    typer.echo(f"Scan it with the phone's camera (works once, for {TTL.seconds // 60} minutes).")
+    typer.echo("It is drawn for a dark terminal; if it won't scan, open the link below instead.")
+    typer.echo(f"Or open: {link}")

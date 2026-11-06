@@ -59,6 +59,20 @@ class User(SQLModel, table=True):
     is_admin: bool = False
     created_at: datetime = Field(default_factory=utcnow)
     disabled_at: datetime | None = None
+    # Unfinished jobs this member may have at once: None = the server default
+    # (THINAIR_MEMBER_JOB_LIMIT), 0 = no limit. Admins are never limited.
+    max_active_jobs: int | None = None
+
+
+class PairingCode(SQLModel, table=True):
+    """A one-time code (shown as a QR code by `thinair qr`) that signs a phone in. Only its
+    SHA-256 is stored; it expires after a few minutes and works once."""
+
+    code_hash: str = Field(primary_key=True)
+    user_id: str | None = Field(default=None, foreign_key="user.id")  # None = the owner
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime
+    used_at: datetime | None = None
 
 
 class Runner(SQLModel, table=True):

@@ -270,6 +270,13 @@ if [ -n "$NEW_TOKEN" ]; then
 else
   say "  Token:     THINAIR_ADMIN_TOKEN in $DIR/.env"
 fi
+if [ -n "$public" ] && [ -n "$NEW_TOKEN" ] &&
+  docker compose exec -T thinair thinair qr --help >/dev/null 2>&1; then
+  say ""
+  say "Sign your phone in: scan this with its camera."
+  docker compose exec -T thinair thinair qr || true
+  say "(New code any time: cd $DIR && docker compose exec thinair thinair qr)"
+fi
 say ""
 say "Next steps:"
 if [ -z "$public" ] && [ "${bind:-127.0.0.1}" = 127.0.0.1 ]; then

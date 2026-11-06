@@ -34,6 +34,7 @@ from thinair.users import (
     disable_user,
     get_user,
     list_users,
+    set_job_limit,
 )
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
@@ -119,7 +120,7 @@ def _submit(svc: JobService, who: Principal, url: str, **kw: Any) -> JobOut:
     try:
         job = svc.submit(url, **kw)
     except PrepareError as e:
-        raise _err(422, e.code, e.message) from e
+        raise _err(429 if e.code == "too_many_jobs" else 422, e.code, e.message) from e
     with session_scope() as s:
         return JobOut.of(*_job_and_repo(s, job.id, who))
 
@@ -377,6 +378,7 @@ def _submit_pr(svc: JobService, who: Principal, agent_job_id: str) -> JobOut:
             "pr_exists": status.HTTP_409_CONFLICT,
             "pr_in_progress": status.HTTP_409_CONFLICT,
             "github_not_allowed": status.HTTP_403_FORBIDDEN,
+            "too_many_jobs": status.HTTP_429_TOO_MANY_REQUESTS,
         }.get(e.code, 422)
         raise _err(code, e.code, e.message) from e
     with session_scope() as s:
@@ -432,6 +434,7 @@ class UserOut(BaseModel):
     is_admin: bool
     created_at: datetime | None = None
     disabled_at: datetime | None = None
+    max_active_jobs: int | None = None  # None = server default (0 = no limit)
 
 
 class UserIn(BaseModel):
@@ -477,6 +480,21 @@ def users_new_token(
         if user is None or user.disabled_at is not None:
             raise _err(404, "user_not_found", f"No active user called {name!r}.")
         return {"token": create_token(s, body.name, user_id=user.id)}
+
+
+class LimitIn(BaseModel):
+    max_active_jobs: int | None = Field(None, ge=0, le=10_000)
+
+
+@router.post("/users/{name}/limit", response_model=UserOut, tags=["users"])
+def users_limit(name: str, body: LimitIn, _admin: Principal = Depends(require_admin)) -> User:
+    """Unfinished jobs this member may have at once: a number (0 = no limit), or null for the
+    server default (THINAIR_MEMBER_JOB_LIMIT). Admins are never limited."""
+    with session_scope() as s:
+        try:
+            return set_job_limit(s, name, body.max_active_jobs)
+        except UserError as e:
+            raise _err(404 if e.code == "user_not_found" else 422, e.code, e.message) from e
 
 
 @router.post("/users/{name}/disable", response_model=UserOut, tags=["users"])
