@@ -35,8 +35,18 @@ auth:
     In Claude Code, type /login, open the link it shows (any device works), sign in with your
     own account, paste the code back, then type /exit.
   hint: >-
-    Claude Code is not logged in for this Thinair server. Run `thinair auth claude` on the
-    server (or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+    Claude Code is not signed in for this Thinair server. Sign it in on the Agents screen of the
+    Thinair app, or run `thinair auth claude` on the server.
+  # Sign-in from the phone. Checked in a terminal with 2.1.311 (docs/agents.md "In-app login"):
+  # `claude auth login` prints "If the browser didn't open, visit: <link>" (PKCE: the link has
+  # code_challenge, S256) and then "Paste code here if prompted > ". The code is exchanged at
+  # platform.claude.com, already on the egress allowlist; claude.com is only opened on the phone.
+  login_flow:
+    command: [claude, auth, login]
+    url: 'visit:\s*(https://\S+)'
+    url_hosts: [claude.com, claude.ai, platform.claude.com]
+    code_in: 'Paste code here'
+    help: Sign in with your own Claude account, then copy the code it shows.
 # Outbound allowlist (Claude Code honours HTTPS_PROXY; hosts from its network-config docs):
 # the API, and claude.ai / platform.claude.com for subscription login and token refresh.
 # Telemetry hosts are off anyway (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).

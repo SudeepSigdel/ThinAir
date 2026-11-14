@@ -6,7 +6,7 @@ Docker socket) are impossible to express, so no caller can accidentally widen th
 
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 SANDBOX_USER = "10001:10001"
 LABEL_MANAGED = "thinair.managed"
@@ -69,6 +69,9 @@ class SandboxSpec(BaseModel):
     # Keep stdin open so Thinair can send lines to the process (agent conversations). Only
     # Thinair writes to it, through a `StdinPipe`; nothing else is attached.
     stdin: bool = False
+    # Give the process a terminal (agent logins draw prompts for one). Only with `stdin`, and
+    # only through `SandboxManager.open_terminal`, which attaches before the container starts.
+    tty: bool = False
     tmpfs_tmp_bytes: int = 256 * 1024**2
     # /tmp is noexec by default; the install phase turns this off (installers may run helpers).
     tmp_noexec: bool = True
@@ -91,6 +94,12 @@ class SandboxSpec(BaseModel):
         if bad:
             raise ValueError(f"invalid environment variable names: {bad}")
         return v
+
+    @model_validator(mode="after")
+    def _tty_needs_stdin(self) -> "SandboxSpec":
+        if self.tty and not self.stdin:
+            raise ValueError("tty=True needs stdin=True")
+        return self
 
 
 class SandboxResult(BaseModel):

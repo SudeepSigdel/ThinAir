@@ -146,7 +146,16 @@ changes and several projects can run at the same time. What carries over:
 
 ## Running a coding agent
 
-Each agent logs in **once, with your account**, into its own Docker volume on your server:
+Each agent logs in **once, with your account**, into its own Docker volume on your server.
+
+**From your phone (Claude Code, Codex):** open **Agents** in the app and tap **Sign in**. Open the
+sign-in page it links to, sign in with your own account, then paste the code back (Claude Code)
+or enter the code shown in the app at OpenAI's page (Codex; turn on device code login in your
+ChatGPT security settings first). Thinair runs the agent's own login inside the agent's container
+and only passes the link and the code along; the login itself stays in the agent's volume
+([docs/agents.md](docs/agents.md#in-app-login-sign-in-from-the-phone)).
+
+**From a terminal** (every agent, including Gemini CLI):
 
 ```sh
 uv run thinair auth claude        # from a checkout with Python + uv (needs a terminal)
@@ -408,6 +417,12 @@ never reads it, never copies it, and never sends it anywhere. If you use a token
 `claude setup-token` instead, it sits in your server's `.env` and is passed only into that agent's
 container, masked in every log.
 
+**What passes through Thinair when I sign in from the phone?** Only the sign-in link (out to the
+app) and a one-time code: the code Claude's page gives you (typed into Claude Code's prompt), or
+the code Codex shows (which you type at OpenAI). Claude's link uses PKCE, so that code is useless
+without a secret that never leaves Claude Code's process inside the container. Neither is stored
+or logged, and nobody else on the server (admins included) can see your sign-in.
+
 **Can I share my Thinair server with friends so they use my subscription?** No. You can share
 the *server* (see "Several users"), but each person logs in to the agents with their own account,
 in their own volume, and the API keys in your `.env` only reach your jobs. Check your plan's terms
@@ -466,7 +481,10 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set
   `THINAIR_PIP_INDEX_URL` / `THINAIR_NPM_REGISTRY` in `.env` to a mirror you can reach.
 - **"Could not detect the project type"**: add a `thinair.yaml` with `stack`, `install` and `test`.
-- **"Claude Code is not logged in"**: run `thinair auth claude` (see above).
+- **"Claude Code is not signed in"**: tap **Sign in to the agent** on the failed job (or
+  Agents > Sign in), then **Run again**. From a terminal: `thinair auth claude` (see above).
+- **Codex sign-in fails right away**: turn on device code login in your ChatGPT security
+  settings, then start the sign-in again.
 - **The 0.25 CPU runs time out**: that's a real result (too slow at that size). Raise
   `timeouts.test_s` if you want them to finish anyway.
 

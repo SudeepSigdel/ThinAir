@@ -19,12 +19,71 @@
     <a class="brand" href="#/">Thinair</a>
     <span class="bar-end">
       <span id="who" class="who" hidden></span>
+      <a id="nav-agents" class="link" href="#/agents" hidden>Agents</a>
       <button id="logout" class="link" type="button" hidden>Log out</button>
     </span>
   </header>
 
   <main>
     <p id="loading" class="muted">Loading…</p>
+
+    <!-- Agents: who is signed in, and signing them in from the phone -->
+    <section id="view-agents" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <h1>Agents</h1>
+      <p class="muted">Each agent signs in once, with your own account. The login stays in that
+        agent's own storage on your server; Thinair never sees it.</p>
+      <ul id="agent-list" class="jobs"></ul>
+      <p class="error" id="agents-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Sign in to one agent -->
+    <section id="view-signin" hidden>
+      <a href="#/agents" class="back">‹ Agents</a>
+      <h1 id="signin-title">Sign in</h1>
+      <p class="muted" id="signin-intro"></p>
+      <p class="muted" id="signin-preparing" role="status" hidden></p>
+      <ol id="signin-steps" class="steps" hidden>
+        <li>
+          <span class="step-title" id="signin-open-title">Open the sign-in page</span>
+          <a id="signin-link" class="button" target="_blank" rel="noopener noreferrer" hidden>Open sign-in page ↗</a>
+          <p id="signin-url-box" hidden><span class="warn-text">This address isn't one Thinair expects,
+            so it isn't a link. Check it before you open it:</span>
+            <code id="signin-url" class="wrap"></code></p>
+        </li>
+        <li id="signin-paste" hidden>
+          <span class="step-title">Paste the code it gives you</span>
+          <form id="signin-form" class="inline-form" autocomplete="off">
+            <label for="signin-code" class="visually-hidden">Code</label>
+            <div class="inline">
+              <input id="signin-code" type="text" maxlength="2000" autocapitalize="off"
+                     autocomplete="one-time-code" spellcheck="false" placeholder="Paste the code">
+              <button type="submit" id="signin-submit">Finish sign-in</button>
+            </div>
+          </form>
+        </li>
+        <li id="signin-device" hidden>
+          <span class="step-title">Enter this code there</span>
+          <div class="inline">
+            <strong id="signin-user-code" class="code-big"></strong>
+            <button type="button" id="signin-copy" class="secondary">Copy</button>
+          </div>
+          <p class="muted">Your Thinair server started this sign-in, so this code is safe to
+            enter. This screen finishes by itself.</p>
+        </li>
+      </ol>
+      <p class="muted" id="signin-help" hidden></p>
+      <p id="signin-status" role="status" hidden></p>
+      <p class="error" id="signin-error" role="alert" hidden></p>
+      <p id="signin-command-box" hidden>On the server, run:
+        <code id="signin-command" class="wrap"></code></p>
+      <div class="actions">
+        <button type="button" id="signin-continue" hidden>Continue</button>
+        <button type="button" id="signin-again" hidden>Start again</button>
+        <button type="button" id="signin-takeover" hidden>Cancel it and start this one</button>
+        <button type="button" id="signin-cancel" class="secondary" hidden>Cancel</button>
+      </div>
+    </section>
 
     <!-- Login -->
     <section id="view-login" hidden>

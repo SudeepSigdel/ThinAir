@@ -32,6 +32,12 @@ agents) inside Docker containers.
 - The API requires a token. Only SHA-256 hashes are stored, wrong tokens are rate-limited, and the
   browser session is an HttpOnly, SameSite=Strict cookie. The web app ships a strict CSP and
   renders all job output as plain text.
+- Signing an agent in from the phone relays only the sign-in link and a one-time code between
+  the agent's own login command (in a hardened container with only that user's login volume)
+  and the user who started it. Nothing about it is stored or logged; other users, admins
+  included, get 404. Links are tappable only for `https` hosts the agent's config allows; a
+  pasted code is stripped of control characters and typed only at the CLI's code prompt.
+  One sign-in per user, three per server, ten minutes each.
 - With several users: members only see their own jobs (others' are a 404), only admins manage
   users, each user's agent login lives in its own volume, the owner's API keys only reach the
   owner's jobs, and the server's GitHub token is not used for members' jobs unless

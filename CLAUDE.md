@@ -416,6 +416,32 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   a Tailscale install to public (`THINAIR_PHONE=public`) turns that handler off first (`release_tailscale_443`) and
   restores it if public mode fails (found on the Oracle VM).
 
+## Agent sign-in from the phone (`src/thinair/agents/login.py`, `api/login_api.py`, onboarding v2 phase 2)
+- `auth.login_flow` (agents/config.py `LoginFlow`: command, url, url_hosts, code_out, code_in, help) on claude and
+  codex. `FlowMachine` (pure) cleans terminal output (OSC 8 links, CSI colours, CR) and moves preparing -> link ->
+  verifying -> done|failed|expired|cancelled. A match counts only when followed by whitespace (never half a link cut
+  between reads). A code is typed (+ "\r") only while the `code_in` prompt is unanswered; a new prompt after a code =
+  refused -> back to link. Exit 0 -> `check_command` decides done/failed.
+- `LoginHub` (`app.state.logins`, in memory only; `create_app(login_backend=)` for fakes): one session per user
+  (409 `login_running` + its id), `MAX_SESSIONS`=3 (429), 10 min after the container starts, finished sessions kept
+  2 min. Sessions are 404 for everyone but their starter (admins too). Never write them to EventStore/DB; the log gets
+  state names only (a test asserts no link/code in logs and no JobEvent rows). `known[volume]` feeds
+  `GET /api/agents` `login: {in_app, state}` (never runs a container there).
+- `DockerLoginBackend`: agent image for the node stack, `SandboxManager.open_terminal(spec)` (tty+stdin, attach
+  BEFORE start, same call as StdinPipe, so no new socket-proxy permission: verified on the Oracle ARM VM through
+  tecnativa/docker-socket-proxy), egress gateway when the agent has `egress` (ensure the python sandbox image first:
+  sign-ins skip workspace preparation, which normally builds it). Job label `login-<sid>` (janitor sweeps).
+- `Terminal` reads in a daemon thread into a queue: Docker Desktop's Windows named pipe ignores socket timeouts
+  (a `recv` with a timeout hung forever). `run()` refuses tty specs.
+- Real CLI output (2026-11-14) is recorded in docs/agents.md "In-app login"; Claude's link host is `claude.com`
+  (not claude.ai), PKCE present; Codex device URL https://auth.openai.com/codex/device, code `XXXX-XXXXX`.
+  Tests: test_agent_login.py (canned bytes at every cut, API with FakeBackend), test_agent_login_docker.py (fake login
+  program through a real tty, real CLIs up to the link with `-test` ids). Never complete a real login in tests.
+- UI: header link Agents (`#/agents`: state, Sign in / Check, terminal hint for others) and `#/agent/<id>/login`
+  (O3: link button, paste box or big device code + Copy, status). SSE events carry the same payload as GET
+  (`LoginSession.public()`; a smoke test caught "undefined is signed in" when they differed). A job failed with
+  `agent_not_authenticated` links to the sign-in screen. Browser smoke (Edge, phone size): 19 checks.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

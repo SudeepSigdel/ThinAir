@@ -22,8 +22,8 @@ auth:
     In Claude Code, type /login, open the link it shows (any device works), sign in with your
     own account, paste the code back, then type /exit.
   hint: >-
-    Claude Code is not logged in for this Thinair server. Run `thinair auth claude` on the
-    server (or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+    Claude Code is not signed in for this Thinair server. Sign it in on the Agents screen of the
+    Thinair app, or run `thinair auth claude` on the server.
 egress:
   - api.anthropic.com
   - claude.ai

@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from thinair import __version__
-from thinair.api import auth, routes, runner_api
+from thinair.agents.login import DockerLoginBackend, LoginBackend, LoginHub
+from thinair.api import auth, login_api, routes, runner_api
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
@@ -64,6 +65,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         goes_remote=goes_remote,
     )
     app.state.runners = hub
+    # Agent sign-ins from the phone: in memory only, nothing runs until someone starts one.
+    logins = LoginHub(app.state.login_backend or DockerLoginBackend())
+    app.state.logins = logins
     await jobs.start()
     app.state.jobs = jobs
     # Once per start, in the background: has the public IP moved away from an sslip.io name?
@@ -84,11 +88,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cleanup.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await cleanup
+        await logins.close_all()  # their containers go too
         await jobs.stop()
 
 
-def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
-    """`executors` lets tests run the real API with fake jobs (no Docker)."""
+def create_app(
+    executors: dict[JobKind, Executor] | None = None, login_backend: LoginBackend | None = None
+) -> FastAPI:
+    """`executors` and `login_backend` let tests run the real API with fakes (no Docker)."""
     docs = get_settings().api_docs
     app = FastAPI(
         title="Thinair",
@@ -100,11 +107,13 @@ def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
         openapi_url="/openapi.json" if docs == "open" else None,
     )
     app.state.executors = executors
+    app.state.login_backend = login_backend
     app.state.origin_warning = None
     if docs == "auth":
         _docs_behind_login(app)
     app.include_router(auth.router)
     app.include_router(routes.router)
+    app.include_router(login_api.router)
     app.include_router(runner_api.admin_router)
     app.include_router(runner_api.runner_router)
     mount_web(app)
