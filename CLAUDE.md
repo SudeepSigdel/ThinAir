@@ -106,7 +106,10 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   top-level filenames + overrides -> `ResolvedProject`. `prepare.py`: volume -> clone (in a sandbox) or tar upload
   -> detect -> install. GitHub HTTPS URLs only.
 - Private repos (`src/thinair/github.py`): `THINAIR_GITHUB_TOKEN` or `_FILE`, read per call, format-checked
-  (`[A-Za-z0-9_]{20,255}`, no header injection). Only `clone_spec()` gets it, as `GIT_CONFIG_COUNT/KEY_0/VALUE_0`
+  as OPAQUE (`[\x21-\x7e]{20,4096}`: no whitespace/CR/LF = no header injection; GitHub App installation
+  tokens are stateless `ghs_<id>_<JWT>` since 2026-04-27, ~520 chars with dots, so never assume a length
+  or alphabet). `_stream_logs` masks secrets BEFORE cutting a line to MAX_LINE_CHARS (else a long token
+  across the cut leaked its start). Only `clone_spec()` gets it, as `GIT_CONFIG_COUNT/KEY_0/VALUE_0`
   = `http.https://github.com/.extraHeader: Authorization: Basic b64(x-access-token:TOKEN)`; token and b64 are
   both in `redact`. Never in argv, .git/config, DB, install/test/agent containers. A blank env value falls back to
   the file (`.env.example` has `THINAIR_GITHUB_TOKEN=`). Docker tests use a fake token: GitHub rejects it -> `clone_failed`.

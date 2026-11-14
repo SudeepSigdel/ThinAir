@@ -468,7 +468,8 @@ def _stream_logs(
     truncated: threading.Event,
 ) -> None:
     """Split the merged stdout/stderr stream into lines, redact secrets, cap total size."""
-    secrets_ = [s for s in spec.redact if s]
+    # Longest first, so a secret that contains another one is masked whole.
+    secrets_ = sorted({s for s in spec.redact if s}, key=len, reverse=True)
     buf = b""
     total = 0
 
@@ -482,10 +483,12 @@ def _stream_logs(
                 truncated.set()
                 on_line(f"[thinair] output truncated after {spec.max_output_bytes} bytes")
             return
-        line = raw.decode("utf-8", errors="replace")[:MAX_LINE_CHARS]
+        line = raw.decode("utf-8", errors="replace")
+        # Mask BEFORE cutting the line: a cut through a secret would leave its start visible
+        # (GitHub App tokens are ~520 characters, their Basic-auth form ~715).
         for s in secrets_:
             line = line.replace(s, "***")
-        on_line(line)
+        on_line(line[:MAX_LINE_CHARS])
 
     with contextlib.suppress(DockerException, requests.exceptions.RequestException):
         for chunk in container.logs(stream=True, follow=True, stdout=True, stderr=True):

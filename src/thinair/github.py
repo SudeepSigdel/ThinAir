@@ -12,9 +12,11 @@ import re
 
 from thinair.config import get_settings
 
-# Classic (ghp_...), fine-grained (github_pat_...) and app (ghs_...) tokens: letters, digits, `_`.
-# Anything else (spaces, newlines, quotes) is refused, so a value can't inject extra headers.
-TOKEN_RE = re.compile(r"^[A-Za-z0-9_]{20,255}$")
+# Tokens are opaque: classic (ghp_...), fine-grained (github_pat_...) and app installation
+# tokens, which since 2026-04-27 can be stateless `ghs_<app id>_<JWT>` (~520 characters, with
+# dots). So no assumption about length or alphabet beyond what keeps a header safe: printable
+# ASCII without spaces (no CR/LF/tab, so a value can't inject or split headers), 20-4096 chars.
+TOKEN_RE = re.compile(r"^[\x21-\x7e]{20,4096}$")
 
 
 class GitHubTokenError(Exception):
@@ -39,7 +41,7 @@ def github_token() -> str | None:
     if not TOKEN_RE.match(raw):
         raise GitHubTokenError(
             "THINAIR_GITHUB_TOKEN does not look like a GitHub token "
-            "(expected only letters, digits and underscores)."
+            "(expected 20-4096 visible characters, no spaces or line breaks)."
         )
     return raw
 
