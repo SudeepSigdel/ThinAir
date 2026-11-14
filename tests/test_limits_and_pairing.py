@@ -168,3 +168,19 @@ def test_qr_command_prints_a_working_link(monkeypatch) -> None:
     with session_scope() as s:
         assert redeem(s, link.split("#pair=")[1]).startswith("thinair_")
     assert runner.invoke(cli, ["qr", "--user", "ghost"]).exit_code == 1
+
+
+def test_qr_ttl_for_the_installer(monkeypatch) -> None:
+    """The installer shows a 30-minute code: time to scan it and set up the phone."""
+    monkeypatch.setenv("THINAIR_PUBLIC_URL", "https://129-146-10-20.sslip.io")
+    get_settings.cache_clear()
+    runner = CliRunner()
+    res = runner.invoke(cli, ["qr", "--ttl", "30"])
+    assert res.exit_code == 0 and "for 30 minutes" in res.output, res.output
+    with session_scope() as s:
+        row = s.exec(select(PairingCode)).one()
+        lifetime = row.expires_at - row.created_at
+        assert timedelta(minutes=29) < lifetime <= timedelta(minutes=30, seconds=1)
+        with pytest.raises(ValueError):
+            create_pairing_code(s, ttl=timedelta(hours=2))
+    assert runner.invoke(cli, ["qr", "--ttl", "61"]).exit_code != 0  # an hour at most

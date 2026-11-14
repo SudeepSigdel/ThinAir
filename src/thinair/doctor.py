@@ -1,8 +1,10 @@
 """`thinair doctor`: check a Thinair install and say how to fix what's wrong.
 
-Every check is read-only. Only one leaves the machine: with a GitHub token configured,
-`GET https://api.github.com/rate_limit` with that token (to GitHub only) to tell a working
-token from a rejected one. Nothing is sent to Telegram, and no agent is started.
+Every check is read-only. Network requests (all skipped with `--offline`): with a GitHub token
+configured, `GET https://api.github.com/rate_limit` with that token (to GitHub only); an
+anonymous check for a newer release; with an sslip.io address, one anonymous request for this
+machine's public IP (to https://ipv4.icanhazip.com); and an HTTPS request to Thinair's own
+address. Nothing is sent to Telegram, and no agent is started.
 """
 
 import shutil
@@ -55,6 +57,8 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
 
     guard("docker", _docker_all)
     guard("phone access", _phone)
+    guard("public address", lambda: _public_address(online))
+    guard("https", lambda: _https(online))
     guard("github", lambda: _github(online))
     guard("notifications", _telegram)
     guard("runners", _runners)
@@ -313,10 +317,64 @@ def _phone() -> Check:
         "warn",
         "Phone access",
         "no https:// address set (THINAIR_PUBLIC_URL)",
-        "Installing the app on a phone needs HTTPS: a tunnel (Tailscale, Cloudflare) or "
-        "THINAIR_DOMAIN with `docker compose --profile https up -d`. Then set THINAIR_PUBLIC_URL "
-        "so notifications link to it.",
+        "Installing the app on a phone needs HTTPS. Run the installer again with "
+        "THINAIR_PHONE=auto: with a public IP it sets up https://<your-ip>.sslip.io by itself, "
+        "otherwise it offers Tailscale. Or use your own domain (THINAIR_PHONE=domain).",
     )
+
+
+REINSTALL = (
+    "Run the installer again on the server (it keeps your settings and updates the address), "
+    "then scan the new QR code with your phone."
+)
+
+
+def _public_address(online: bool) -> list[Check]:
+    """With an sslip.io address: does it still point at this machine's public IP?"""
+    from thinair.netinfo import current_public_ipv4, ip_from_sslip
+
+    s = get_settings()
+    domain = (s.domain or "").strip()
+    expected = ip_from_sslip(domain)
+    if expected is None:
+        return []  # own domain, Tailscale, or no public address: nothing derived from the IP
+    if not online and not s.public_ip:
+        return [Check("ok", "Public address", f"{domain} (not checked online)")]
+    current = current_public_ipv4()
+    if current is None:
+        return [Check("warn", "Public address", "couldn't look up this machine's public IP")]
+    if current != expected:
+        return [
+            Check(
+                "fail",
+                "Public address",
+                f"this machine's public IP is now {current}, but {domain} points at {expected}",
+                REINSTALL + " Tip: reserve a static IP with your provider so this can't recur.",
+            )
+        ]
+    return [Check("ok", "Public address", f"{domain} matches this machine ({current})")]
+
+
+def _https(online: bool) -> list[Check]:
+    """Is Thinair's HTTPS address up with a valid certificate? Through Caddy's container when
+    it is reachable (inside Compose), so no hairpin routing is needed."""
+    from thinair.netinfo import firewall_hint, host_of, https_ready, local_cloud, resolves
+
+    s = get_settings()
+    host = (s.domain or "").strip() or host_of(s.public_url)
+    if not host or not (s.public_url or "").startswith("https://") or not online:
+        return []
+    via = "caddy:443" if s.domain and resolves("caddy") else None
+    res = https_ready(host, via=via)
+    if res.ok:
+        return [Check("ok", "HTTPS", res.reason)]
+    fix = " ".join(line.strip() for line in firewall_hint(local_cloud())) if s.domain else ""
+    if s.domain:
+        fix += (
+            " Caddy retries by itself once the ports are open (`docker compose logs caddy` "
+            "shows why it failed)."
+        )
+    return [Check("warn", "HTTPS", res.reason, fix.strip())]
 
 
 def _github(online: bool) -> Check:

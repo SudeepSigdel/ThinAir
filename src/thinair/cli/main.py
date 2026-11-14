@@ -67,11 +67,22 @@ def init(
     typer.echo("Next: docker compose up -d   then open http://localhost:8080")
 
 
+def uvicorn_options() -> dict:
+    """Server options shared by `serve` and the tests that start a real server."""
+    s = get_settings()
+    return {
+        "log_level": s.log_level,
+        # Believe X-Forwarded-For/-Proto only from THINAIR_TRUSTED_PROXIES (e.g. Caddy).
+        "proxy_headers": True,
+        "forwarded_allow_ips": s.trusted_proxies,
+    }
+
+
 @app.command()
 def serve() -> None:
     """Run the API server (one process, no background workers while idle)."""
     s = get_settings()
-    uvicorn.run("thinair.api.app:app", host=s.host, port=s.port, log_level=s.log_level)
+    uvicorn.run("thinair.api.app:app", host=s.host, port=s.port, **uvicorn_options())
 
 
 def _user_id(session, name: str | None) -> str | None:  # noqa: ANN001
@@ -643,15 +654,18 @@ def qr(
     url: str | None = typer.Option(
         None, "--url", help="Address the phone opens (default: THINAIR_PUBLIC_URL)"
     ),
+    ttl: int = typer.Option(10, "--ttl", min=1, max=60, help="Minutes the code stays valid"),
 ) -> None:
     """Show a QR code that signs a phone in: scan it with the phone's camera.
 
-    It holds a one-time code (valid 10 minutes), never your token; the phone gets a new token
-    of its own, which `thinair token list` shows and `thinair token revoke` can remove.
+    It holds a one-time code (valid 10 minutes unless --ttl), never your token; the phone gets a
+    new token of its own, which `thinair token list` shows and `thinair token revoke` removes.
     """
+    from datetime import timedelta
+
     import segno
 
-    from thinair.pairing import TTL, create_pairing_code, pairing_url
+    from thinair.pairing import create_pairing_code, pairing_url
 
     _utf8_output()
     base = (url or get_settings().public_url or "").strip()
@@ -666,11 +680,71 @@ def qr(
         typer.echo("Note: over http:// the phone can't install the app (that needs HTTPS).")
     upgrade(get_engine())
     with session_scope() as session:
-        code = create_pairing_code(session, _user_id(session, user))
+        code = create_pairing_code(session, _user_id(session, user), ttl=timedelta(minutes=ttl))
     link = pairing_url(base, code)
     qr_code = segno.make(link, error="m")
     qr_code.terminal(compact=True, border=2)
     typer.echo("")
-    typer.echo(f"Scan it with the phone's camera (works once, for {TTL.seconds // 60} minutes).")
+    typer.echo(f"Scan it with the phone's camera (works once, for {ttl} minutes).")
     typer.echo("It is drawn for a dark terminal; if it won't scan, open the link below instead.")
     typer.echo(f"Or open: {link}")
+
+
+net_app = typer.Typer(help="Phone access helpers (used by the installer and for troubleshooting).")
+app.add_typer(net_app, name="net")
+
+
+@net_app.command("detect")
+def net_detect(
+    local_ip: str = typer.Option("", "--local-ip", help="This machine's primary IPv4 address"),
+    dmi_vendor: str = typer.Option("", "--dmi-vendor", help="/sys/class/dmi/id/sys_vendor"),
+    dmi_product: str = typer.Option("", "--dmi-product", help="/sys/class/dmi/id/product_name"),
+    dmi_asset: str = typer.Option("", "--dmi-asset", help="/sys/class/dmi/id/chassis_asset_tag"),
+    public_ip: str = typer.Option(
+        "", "--public-ip", help="Skip the lookup and use this address (THINAIR_PUBLIC_IP)"
+    ),
+) -> None:
+    """Print how this machine can be reached (KEY=value lines for the installer).
+
+    Without --public-ip it asks https://ipv4.icanhazip.com once for this machine's address.
+    """
+    from thinair.netinfo import detect
+
+    try:
+        found = detect(
+            local_ip,
+            vendor=dmi_vendor,
+            product=dmi_product,
+            asset=dmi_asset,
+            public_ip=public_ip or None,
+        )
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(found.as_env())
+
+
+@net_app.command("https-check")
+def net_https_check(
+    host: str = typer.Argument(..., help="Host name the certificate must be valid for"),
+    via: str | None = typer.Option(
+        None, "--via", help="Connect here instead (e.g. caddy:443 inside Compose)"
+    ),
+) -> None:
+    """Exit 0 when https://HOST/healthz answers with a valid certificate."""
+    from thinair.netinfo import https_ready
+
+    res = https_ready(host, via=via)
+    typer.echo(res.reason)
+    raise typer.Exit(0 if res.ok else 1)
+
+
+@net_app.command("firewall-hint")
+def net_firewall_hint(
+    cloud: str = typer.Option("", "--cloud", help="oracle, gcp, azure, ... (from `net detect`)"),
+) -> None:
+    """Print where to open ports 80 and 443 (the step only the machine's owner can do)."""
+    from thinair.netinfo import firewall_hint
+
+    for line in firewall_hint(cloud or None):
+        typer.echo(line)

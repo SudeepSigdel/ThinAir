@@ -106,7 +106,10 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   top-level filenames + overrides -> `ResolvedProject`. `prepare.py`: volume -> clone (in a sandbox) or tar upload
   -> detect -> install. GitHub HTTPS URLs only.
 - Private repos (`src/thinair/github.py`): `THINAIR_GITHUB_TOKEN` or `_FILE`, read per call, format-checked
-  (`[A-Za-z0-9_]{20,255}`, no header injection). Only `clone_spec()` gets it, as `GIT_CONFIG_COUNT/KEY_0/VALUE_0`
+  as OPAQUE (`[\x21-\x7e]{20,4096}`: no whitespace/CR/LF = no header injection; GitHub App installation
+  tokens are stateless `ghs_<id>_<JWT>` since 2026-04-27, ~520 chars with dots, so never assume a length
+  or alphabet). `_stream_logs` masks secrets BEFORE cutting a line to MAX_LINE_CHARS (else a long token
+  across the cut leaked its start). Only `clone_spec()` gets it, as `GIT_CONFIG_COUNT/KEY_0/VALUE_0`
   = `http.https://github.com/.extraHeader: Authorization: Basic b64(x-access-token:TOKEN)`; token and b64 are
   both in `redact`. Never in argv, .git/config, DB, install/test/agent containers. A blank env value falls back to
   the file (`.env.example` has `THINAIR_GITHUB_TOKEN=`). Docker tests use a fake token: GitHub rejects it -> `clone_failed`.
@@ -364,16 +367,49 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   ~/thinair-runner, `.env.runner` from env or prompts on /dev/tty, https required. `THINAIR_RAW_URL=file:///repo`
   for offline installs and tests. Tested in `docker:cli` (busybox ash) with the repo mounted read-only, against a
   locally tagged image: fresh install, re-run/upgrade, runner mode, input checks, a real profile job.
-  Phone step (first install, or `THINAIR_PHONE=tailscale|domain|skip`): Tailscale = `tailscale serve --bg --https=443
-  http://127.0.0.1:<port>` (docs: port forwarding needs no root); URL from `tailscale status --json` `CertDomains[0]`,
-  which is EMPTY when the tailnet has HTTPS certificates off (verified in ipnstate.go) -> tell the user, change nothing.
-  Domain = THINAIR_DOMAIN + THINAIR_PUBLIC_URL + `COMPOSE_PROFILES=https` in .env (so plain `up` keeps Caddy). Tested
-  with a fake tailscale CLI and with Caddy on `localhost` (internal CA, no ACME traffic).
-  After startup it runs `thinair images` (builds python/node/git sandbox images; deliberately NOT published
-  prebuilt: they are base image + one user layer, so the download is the cost either way) and `thinair doctor`.
+  Phone step (first install, or whenever `THINAIR_PHONE=auto|public|tailscale|funnel|domain|skip` is given; default
+  auto, see "Phone reachability" below). Tailscale = `tailscale serve|funnel --bg --https=443 http://127.0.0.1:<port>`
+  (docs: port forwarding needs no root; funnel only proxies to http://127.0.0.1); URL from `tailscale status --json`
+  `CertDomains[0]`, EMPTY while the tailnet has HTTPS certificates off (verified in ipnstate.go). serve/funnel are now
+  run BEFORE reading CertDomains because per Tailscale's docs they show a consent link that enables certificates
+  (unverified with a real tailnet). Domain = THINAIR_DOMAIN + THINAIR_PUBLIC_URL + `COMPOSE_PROFILES=https` in .env
+  (so plain `up` keeps Caddy). Re-runs never touch phone setup except following a changed IP of an sslip.io name.
+  After startup it starts `thinair images` DETACHED (`compose exec -d`, so the QR comes right away), runs
+  `thinair doctor` and prints its report only when it exits 1, then the final screen: URL, `thinair qr --ttl 30`
+  (also after an address change), the "public on the internet" line when Caddy serves it. The admin token is printed
+  only when there is no phone URL. `has_subcommand` guards every command older pinned images may lack.
 - `thinair doctor` (`src/thinair/doctor.py`): read-only checks -> `Check(status, name, detail, fix)`, exit 1 on any
-  fail. Must not create the SQLite file (`_db_missing`). Only network call: GitHub `GET /rate_limit` with the token
-  (`--offline` skips). Tests use a fake Docker client (`tests/test_doctor.py`).
+  fail. Must not create the SQLite file (`_db_missing`). Network calls (all skipped by `--offline`): GitHub
+  `GET /rate_limit` with the token, the anonymous release check, the public-IP lookup (sslip.io names only, and not
+  when THINAIR_PUBLIC_IP is set), and an HTTPS probe of its own address. Tests use a fake Docker client.
+
+## Phone reachability (`src/thinair/netinfo.py`, onboarding v2 phase 1)
+- Default: a public IPv4 -> Caddy serves `https://<a-b-c-d>.sslip.io` (Let's Encrypt). `thinair net detect` prints
+  KIND/PUBLIC_IP/LOCAL_IP/CLOUD/HOST lines for the installer (parsed with sed, never eval'd). Kinds: direct (public IP
+  on the machine: wait 180 s), cloud (Oracle/GCP/Azure 1:1 NAT: wait 15 min with a tty, 5 without), nat (anything else,
+  incl. AWS: wait 90 s, then offer "keep waiting" or revert and ask Funnel/Tailscale/domain/skip), none (CGNAT 100.64/10,
+  no IPv4: ask). The local IP comes from `ip -4 route get 1.1.1.1` (sends nothing); DMI strings are cloud-init's
+  ds-identify ones (AWS needs root-only product_uuid, so it is not recognised). Public IP: THINAIR_PUBLIC_IP, else one
+  GET to https://ipv4.icanhazip.com (answers must parse as a public IPv4).
+- Readiness = `thinair net https-check HOST --via caddy:443` inside the server container: a TLS handshake that VERIFIES
+  the certificate for HOST (SNI) and GETs /healthz. No hairpin routing needed, and a valid public cert proves Let's
+  Encrypt reached the machine from outside. Never restart Caddy to "hurry" ACME: Let's Encrypt limits failed
+  validations; Caddy retries with backoff itself (docs: LE -> ZeroSSL -> exponential backoff up to 1 day).
+- IP changes: doctor `Public address` (fail + fix) and a one-shot background check at server start
+  (`api/app.py check_origin`, result in `app.state.origin_warning` + a log warning; no polling). Re-running the installer
+  moves .env to the new name, waits for the cert and prints a 30-minute QR (re-pair = one scan; the old origin's cookie
+  can't follow). A hand-set THINAIR_PUBLIC_IP is saved in .env and then trusted instead of a lookup.
+- Public exposure hardening: uvicorn `proxy_headers` with `forwarded_allow_ips=THINAIR_TRUSTED_PROXIES` (default
+  loopback + RFC1918 + fc00::/7; uvicorn 0.54 takes the right-most untrusted X-Forwarded-For entry; Caddy discards
+  client-sent X-Forwarded-*). `cli.main.uvicorn_options()` is shared by `serve` and the live-server test. HSTS
+  `max-age=31536000` on https responses, NEVER includeSubDomains (sslip.io siblings belong to others).
+  `THINAIR_API_DOCS=auth` (default) serves /docs, /redoc, /openapi.json behind `require_auth` (FastAPI's own routes off).
+- Testing the installer without ACME: in `docker:cli`, a COPY of docker-compose.yml with Caddy `--internal-certs` on
+  high ports; for the success path that copy also makes Caddy copy its root.crt into a shared volume and points the
+  server's `SSL_CERT_FILE` at it (uid 10001 can't read Caddy's pki dir). Pass THINAIR_VERSION to every later manual
+  `compose up` or Compose silently starts an older local `latest` image.
+- Docker-published ports bypass ufw (Docker docs: packets are diverted before ufw's INPUT chain), so the installer does
+  not touch ufw. The Oracle iptables prompt is kept as it was (unverified whether it is still needed for published ports).
 
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional

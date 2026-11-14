@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     # Optional fixed admin token (>= 20 chars). If unset, one is generated on first start.
     admin_token: str | None = None
 
+    # The host name Caddy serves Thinair on (Compose `https` profile), e.g. your own domain or
+    # the installer's `203-0-113-7.sslip.io`. Read here only to check it (doctor, startup).
+    domain: str | None = None
+    # This machine's public IPv4 when it was given by hand (installer: THINAIR_PUBLIC_IP), e.g.
+    # when outgoing traffic leaves through another address. Then nothing looks it up.
+    public_ip: str | None = None
+    # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed (comma-separated
+    # addresses or CIDRs). Behind Caddy that makes the failed-login throttle count each real
+    # client instead of Caddy's one address. The default covers loopback and private ranges
+    # (Compose networks); a client on the public internet can never spoof its address.
+    trusted_proxies: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+    # /docs, /redoc and /openapi.json: "auth" = only after logging in (the default, since the
+    # server may be on the internet), "open" = for anyone, "off" = not served.
+    api_docs: Literal["auth", "open", "off"] = "auth"
+
     # Optional package mirrors for the sandbox install step (useful on restricted networks).
     pip_index_url: str | None = None
     npm_registry: str | None = None

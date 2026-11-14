@@ -153,3 +153,56 @@ def test_cli_token_commands() -> None:
     token_id = listed.stdout.split()[0]
     assert runner.invoke(cli_app, ["token", "revoke", token_id]).exit_code == 0
     assert runner.invoke(cli_app, ["token", "revoke", token_id]).exit_code == 1
+
+
+def _live_server(trusted: str):
+    """The real app behind uvicorn's proxy-header handling, as `thinair serve` runs it.
+    (TestClient skips that layer and its client host is not an IP.)"""
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from thinair.cli.main import uvicorn_options
+
+    opts = {**uvicorn_options(), "forwarded_allow_ips": trusted, "log_level": "warning"}
+    server = uvicorn.Server(uvicorn.Config(create_app({}), **opts))
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    end = time.monotonic() + 10
+    while not server.started and time.monotonic() < end:
+        time.sleep(0.02)
+    return server, thread, sock, f"http://127.0.0.1:{sock.getsockname()[1]}"
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, trusted) -> None:
+    """Behind Caddy every request comes from Caddy's address. With the proxy trusted, one
+    stranger's wrong guesses must not throttle another client; with it untrusted, a client
+    must not dodge the throttle by sending its own X-Forwarded-For."""
+    import requests
+
+    monkeypatch.setenv("THINAIR_ADMIN_TOKEN", TOKEN)
+    get_settings.cache_clear()
+    assert "127.0.0.1" in get_settings().trusted_proxies  # the default trusts local proxies
+    server, thread, sock, base = _live_server("127.0.0.1" if trusted else "192.0.2.1")
+    try:
+        bad = {"Authorization": "Bearer wrong-guess"}
+
+        def me(client_ip):
+            headers = {**bad, "X-Forwarded-For": f"198.51.100.9, {client_ip}"}
+            return requests.get(f"{base}/api/me", headers=headers, timeout=5).status_code
+
+        for _ in range(10):
+            assert me("203.0.113.5") == 401
+        assert me("203.0.113.5") == 429
+        assert me("203.0.113.6") == (401 if trusted else 429)
+        r = requests.get(f"{base}/healthz", headers={"X-Forwarded-Proto": "https"}, timeout=5)
+        assert ("strict-transport-security" in r.headers) is trusted
+    finally:
+        server.should_exit = True
+        thread.join(10)
+        sock.close()

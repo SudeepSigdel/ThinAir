@@ -51,6 +51,15 @@ agents) inside Docker containers.
   for those 10 minutes.
 - Members can't fill the shared queue: at most `THINAIR_MEMBER_JOB_LIMIT` (default 5) unfinished
   jobs each.
+- On a public address (the installer's default on machines with a public IP), only the web app's
+  static shell, `/healthz`, login and pairing answer without a token; the API docs and schema
+  need a login (`THINAIR_API_DOCS`). HTTPS responses carry HSTS (without `includeSubDomains`:
+  other people own the sibling names under sslip.io). The failed-login throttle counts the real
+  client address: `X-Forwarded-For` is believed only from `THINAIR_TRUSTED_PROXIES` (loopback and
+  private ranges, where Caddy sits), and Caddy discards that header when a client sends it.
+- GitHub tokens are treated as opaque (GitHub App tokens can be ~520 characters with dots) but
+  must be printable ASCII without whitespace, so they can't inject or split HTTP headers. Output
+  is masked before long lines are cut, so a cut never reveals part of a secret.
 
 **Not protected (know these before you deploy)**
 
@@ -76,5 +85,13 @@ agents) inside Docker containers.
   runs still have open network access. An allowlisted host that accepts uploads (for example an
   API with an attacker's own key) can still receive data, so the allowlist narrows exfiltration;
   it does not make a malicious repository safe.
+- **A public address is found by scanners within minutes.** Certificates are published in
+  Certificate Transparency logs, so the sslip.io (or your own) name is public knowledge. Thinair's
+  login is the only thing between strangers and your server: keep it updated (`thinair doctor`
+  says when a release is out), or use Tailscale (`THINAIR_PHONE=tailscale`) to stay off the
+  internet.
+- **sslip.io is a third party.** It only answers DNS (it never sees your traffic), but if it is
+  down, or Let's Encrypt's quota for sslip.io names is used up, your address stops resolving or
+  can't get a certificate. Your own domain or Tailscale avoids that dependency.
 - Share a server only with people you trust with the machine (see the first point above): each
   user gets their own agent logins, but all sandboxes share one Docker host.

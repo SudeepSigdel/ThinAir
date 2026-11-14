@@ -52,6 +52,10 @@ class SecurityHeaders(BaseHTTPMiddleware):
         h.setdefault("X-Frame-Options", "DENY")
         if not request.url.path.startswith(_DOCS_PATHS):
             h.setdefault("Content-Security-Policy", CSP)
+        if request.url.scheme == "https":  # directly, or via a trusted proxy's X-Forwarded-Proto
+            # No includeSubDomains: on sslip.io (or a shared parent domain) the subdomains
+            # belong to other people.
+            h.setdefault("Strict-Transport-Security", "max-age=31536000")
         return response
 
 
