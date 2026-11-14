@@ -40,12 +40,15 @@ curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.s
 ```
 
 The installer puts everything in `~/thinair`, creates your login token, starts Thinair from
-ready-made images (nothing is built on your machine), prepares the sandbox images so the first job
-starts right away, and runs `thinair doctor` to check the setup. On the first install it asks how
-you'll open Thinair from your phone (Tailscale, your own domain, or later) and sets up HTTPS for
-it (it can install Tailscale for you too). At the end it prints the address and the token. Open
-<http://localhost:8080> and paste the token to log in. Run the same command again later to
-upgrade; your settings are kept (`thinair doctor` says when a new version is out). You can read the script first:
+ready-made images (nothing is built on your machine) and sets up HTTPS for your phone without
+asking: on a machine with a public IP address, Thinair gets an address like
+`https://203-0-113-7.sslip.io` with a free Let's Encrypt certificate (no domain or account
+needed). It ends with **a QR code: scan it with your phone's camera** and you are signed in. The
+code works once, for 30 minutes. Sandbox images are prepared in the background meanwhile, and
+`thinair doctor` checks the setup (you only see its report if something needs fixing).
+
+Run the same command again later to upgrade; your settings are kept (`thinair doctor` says when a
+new version is out). You can read the script first:
 `curl -fsSL .../install.sh -o install.sh && less install.sh && sh install.sh`.
 
 Lost the token? It is `THINAIR_ADMIN_TOKEN` in `~/thinair/.env`, or create another with
@@ -71,22 +74,47 @@ Copy the token from the log (it is shown only once). To pin a version, set `THIN
 
 ### Using it from your phone
 
-By default Thinair listens only on `127.0.0.1`. The installer can set up either of these for you.
-Later, run it again with `THINAIR_PHONE=tailscale` or `THINAIR_PHONE=domain THINAIR_DOMAIN=...`:
+Thinair itself listens only on `127.0.0.1`; phones reach it through HTTPS (installing the app
+needs it). The installer picks the way by looking at the machine, in this order:
+
+1. **Tailscale is already set up here with HTTPS certificates:** it uses `tailscale serve`
+   (private to your tailnet).
+2. **The machine has a public IPv4 address:** Caddy serves `https://<ip-with-dashes>.sslip.io`
+   ([sslip.io](https://sslip.io) turns that name into your IP) with a Let's Encrypt certificate.
+   Ports 80 and 443 must be reachable from the internet. On cloud servers that usually means one
+   rule in the provider's firewall (Oracle: the VCN security list, AWS: the security group,
+   Google Cloud: a VPC firewall rule, Azure: the network security group); the installer tells
+   you which while it waits for the certificate.
+3. **Otherwise** (a home machine behind a router, carrier NAT) it asks once: **Tailscale Funnel**
+   (a public `https://<machine>.<tailnet>.ts.net` link, nothing to install on the phone),
+   **Tailscale** (private, the phone needs the Tailscale app), your own domain, or skip.
+
+To choose yourself, run the installer again with `THINAIR_PHONE=` one of `auto`, `public`,
+`tailscale`, `funnel`, `domain` (with `THINAIR_DOMAIN=thinair.example.com`) or `skip`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main/install.sh | THINAIR_PHONE=tailscale sh
 ```
 
-By hand:
+Upgrading never changes how an existing install is reached: Tailscale and your own domain keep
+working as they are. `THINAIR_PUBLIC_IP=<address>` skips the IP lookup (one anonymous request to
+`https://ipv4.icanhazip.com`), for example when outgoing traffic leaves through another address.
 
-- **A tunnel (easiest):** [Tailscale](https://tailscale.com/), or a
-  [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-  pointed at `http://localhost:8080`. To install the app from a tunnel URL, it must be HTTPS
-  (for Tailscale, enable HTTPS certificates and use `tailscale serve`).
-- **Your own domain with automatic HTTPS:** point a DNS name at the server, set
-  `THINAIR_DOMAIN=thinair.example.com` in `.env`, open ports 80 and 443, and run
-  `docker compose --profile https up -d`. Caddy gets a certificate for you.
+**The sslip.io address follows the IP.** If your provider gives the machine a new public IP (some
+do on stop/start), the old address stops working: `thinair doctor` and the server's log say so.
+Run the installer again; it moves Thinair to the new address and shows a new QR code, which your
+phone scans once. Reserve a static IP with your provider to avoid this.
+
+**Public by default.** With the sslip.io address (or your own domain), Thinair's login page is on
+the internet. Signing in needs a one-time pairing code or a 256-bit token, wrong attempts are
+rate-limited per address, and the API docs are only shown after logging in. To keep it private,
+use `THINAIR_PHONE=tailscale`, or allow only your own IP to ports 80 and 443 in the provider's
+firewall.
+
+By hand: a [Cloudflare named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+to `http://localhost:8080` works too (not Cloudflare's quick tunnels: they don't support the
+live log stream). Or point your own domain at the server, set `THINAIR_DOMAIN=thinair.example.com`
+in `.env`, open ports 80 and 443, and run `docker compose --profile https up -d`.
 
 Then sign your phone in by scanning a QR code: run `thinair qr` (with Compose:
 `cd ~/thinair && docker compose exec thinair thinair qr`) and point the phone's camera at it. The
@@ -336,7 +364,9 @@ thinair images                   prepare the sandbox images now (else the first 
 thinair cache list|clear         per-project dependency caches (package downloads)
 ```
 
-The HTTP API is documented at `/docs` on your server (log in there with the same token).
+The HTTP API is documented at `/docs` on your server: log in to the web app first, then open
+`/docs` in the same browser. `THINAIR_API_DOCS=open` shows them without logging in, `off` hides
+them.
 
 ## Security model
 
@@ -352,6 +382,12 @@ The HTTP API is documented at `/docs` on your server (log in there with the same
 - **The API** requires a token from the first start. Only SHA-256 hashes of tokens are stored,
   wrong tokens are rate-limited, and the phone app uses an HttpOnly, SameSite=Strict cookie.
   The web app has a strict Content-Security-Policy and renders all job output as text.
+- **Reaching it from your phone:** by default the installer puts Thinair's login page on the
+  public internet at `https://<your-ip>.sslip.io` (HTTPS with HSTS; plain HTTP only redirects).
+  Signing in needs a one-time pairing code or a 256-bit token. Wrong attempts are counted per
+  real client address: Thinair believes `X-Forwarded-For` only from the proxies in
+  `THINAIR_TRUSTED_PROXIES` (loopback and private ranges, i.e. Caddy), and Caddy ignores that
+  header from clients. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
 - **GitHub token (optional):** used only by clone/push containers and Thinair's own GitHub API
   calls, never by install, test or agent runs, and never stored or logged. See [Private repositories](#private-repositories).
@@ -423,6 +459,10 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
 (`--offline` skips it).
 
 - **"Cannot reach the Docker daemon"**: Docker isn't running, or `THINAIR_DOCKER_HOST` is wrong.
+- **The phone can't open the sslip.io address**: `thinair doctor` checks the certificate and
+  whether the address still matches the machine's IP. "Ports 80 and 443 are not reachable": open
+  them in your provider's firewall; Caddy retries by itself. "Public IP is now ...": run the
+  installer again and scan the new QR code.
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set
   `THINAIR_PIP_INDEX_URL` / `THINAIR_NPM_REGISTRY` in `.env` to a mirror you can reach.
 - **"Could not detect the project type"**: add a `thinair.yaml` with `stack`, `install` and `test`.

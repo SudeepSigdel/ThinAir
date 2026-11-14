@@ -147,7 +147,11 @@ async function route() {
     if (!(e instanceof AuthError)) {
       hideAll();
       show("loading");
-      $("loading").textContent = `Cannot reach Thinair: ${e.message}`;
+      // Offline, the service worker still opens this page; say what usually fixes it.
+      $("loading").textContent = navigator.onLine
+        ? `Can't reach your Thinair server (${e.message}). If its IP address changed, run the ` +
+          "installer again on the server, then scan the new QR code."
+        : "You're offline. Thinair will load when you're connected again.";
     }
     return;
   }
@@ -890,6 +894,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("retry").addEventListener("click", retryJob);
   $("logout").addEventListener("click", logout);
   window.addEventListener("hashchange", route);
+  window.addEventListener("online", () => {
+    if (!$("loading").hidden) route(); // back online after "can't reach": try again
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     if (!$("view-home").hidden) Promise.all([loadRepos(), loadJobs()]);

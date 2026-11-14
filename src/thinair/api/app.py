@@ -66,6 +66,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.runners = hub
     await jobs.start()
     app.state.jobs = jobs
+    # Once per start, in the background: has the public IP moved away from an sslip.io name?
+    origin = None
+    if settings.domain:
+        origin = asyncio.create_task(_origin_check(app), name="thinair-origin-check")
     cleanup = None
     if settings.log_retention_days > 0:
         cleanup = asyncio.create_task(
@@ -74,6 +78,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if origin is not None and not origin.done():
+            origin.cancel()
         if cleanup is not None:
             cleanup.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -83,8 +89,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
     """`executors` lets tests run the real API with fake jobs (no Docker)."""
-    app = FastAPI(title="Thinair", version=__version__, lifespan=lifespan)
+    docs = get_settings().api_docs
+    app = FastAPI(
+        title="Thinair",
+        version=__version__,
+        lifespan=lifespan,
+        # "auth" serves them below, behind login; "off" not at all.
+        docs_url="/docs" if docs == "open" else None,
+        redoc_url="/redoc" if docs == "open" else None,
+        openapi_url="/openapi.json" if docs == "open" else None,
+    )
     app.state.executors = executors
+    app.state.origin_warning = None
+    if docs == "auth":
+        _docs_behind_login(app)
     app.include_router(auth.router)
     app.include_router(routes.router)
     app.include_router(runner_api.admin_router)
@@ -97,6 +115,56 @@ def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     return app
+
+
+def _docs_behind_login(app: FastAPI) -> None:
+    """The interactive API docs, only for signed-in callers (the server may be on the
+    internet; the schema maps every route). Log in to the web app first, then open /docs."""
+    from fastapi import Depends
+    from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    from thinair.api.auth import require_auth
+
+    guard = [Depends(require_auth)]
+
+    @app.get("/openapi.json", include_in_schema=False, dependencies=guard)
+    def openapi() -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False, dependencies=guard)
+    def docs() -> HTMLResponse:
+        return get_swagger_ui_html(openapi_url="/openapi.json", title="Thinair API")
+
+    @app.get("/redoc", include_in_schema=False, dependencies=guard)
+    def redoc() -> HTMLResponse:
+        return get_redoc_html(openapi_url="/openapi.json", title="Thinair API")
+
+
+def check_origin(fetch=None) -> str | None:  # noqa: ANN001
+    """If Thinair is served on an sslip.io name, does that name still match this machine's
+    public IP? Returns a warning (with the fix) or None. One request; never repeated."""
+    from thinair.netinfo import current_public_ipv4, ip_from_sslip
+
+    expected = ip_from_sslip(get_settings().domain)
+    if expected is None:
+        return None
+    current = current_public_ipv4(fetch)
+    if current is None or current == expected:
+        return None
+    return (
+        f"This server's public IP is now {current}, but its address "
+        f"{get_settings().domain} points at {expected}, so phones can't reach it. "
+        "Run the installer again on the server (it updates the address), then scan the new "
+        "QR code with your phone."
+    )
+
+
+async def _origin_check(app: FastAPI) -> None:
+    warning = await asyncio.to_thread(check_origin)
+    app.state.origin_warning = warning
+    if warning:
+        log.warning("%s", warning)
 
 
 app = create_app()

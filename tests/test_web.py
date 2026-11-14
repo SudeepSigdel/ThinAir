@@ -87,3 +87,48 @@ def test_service_worker_is_at_the_root_and_never_caches_api_calls(client) -> Non
         re.search(r"SHELL = (\[.*?\]);", sw, re.S).group(1).replace(",\n]", "]")
     ):
         assert client.get(path).status_code == 200, path
+
+
+@pytest.fixture
+def docs_mode(monkeypatch):
+    from thinair.config import get_settings
+
+    def make(mode: str | None):
+        if mode is None:
+            monkeypatch.delenv("THINAIR_API_DOCS", raising=False)
+        else:
+            monkeypatch.setenv("THINAIR_API_DOCS", mode)
+        monkeypatch.setenv("THINAIR_ADMIN_TOKEN", "d" * 40)
+        get_settings.cache_clear()
+        return TestClient(create_app({}))
+
+    return make
+
+
+def test_api_docs_need_a_login_by_default(docs_mode) -> None:
+    """The server may be on the internet: the schema maps every route, so it is not public."""
+    with docs_mode(None) as c:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert c.get(path).status_code == 401, path
+        auth = {"Authorization": "Bearer " + "d" * 40}
+        assert "swagger" in c.get("/docs", headers=auth).text.lower()
+        schema = c.get("/openapi.json", headers=auth).json()
+        assert "/api/jobs" in schema["paths"]
+        assert "/openapi.json" not in schema["paths"]  # the docs routes stay out of the schema
+        assert "content-security-policy" not in c.get("/docs", headers=auth).headers
+
+
+def test_api_docs_open_and_off(docs_mode) -> None:
+    with docs_mode("open") as c:
+        assert c.get("/docs").status_code == 200 and c.get("/openapi.json").status_code == 200
+    with docs_mode("off") as c:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert c.get(path).status_code in (404, 405), path
+
+
+def test_hsts_only_over_https_and_never_for_subdomains() -> None:
+    with TestClient(create_app({}), base_url="https://thinair.test") as c:
+        h = c.get("/healthz").headers["strict-transport-security"]
+        assert h == "max-age=31536000"  # sslip.io subdomains belong to other people
+    with TestClient(create_app({})) as c:
+        assert "strict-transport-security" not in c.get("/healthz").headers

@@ -13,8 +13,11 @@
 #   THINAIR_DIR       install folder           (default ~/thinair, runner: ~/thinair-runner)
 #   THINAIR_PORT      port on this machine     (default 8080; first install only)
 #   THINAIR_VERSION   image tag                (default latest; e.g. 0.2.0 or edge)
-#   THINAIR_PHONE     tailscale | domain | skip: how phones reach it (asked on first install)
+#   THINAIR_PHONE     how phones reach it (first install, or whenever given):
+#                     auto (default) = detect: a public IP gets https://<ip>.sslip.io, else
+#                     Tailscale is offered | public | tailscale | funnel | domain | skip
 #   THINAIR_DOMAIN    your domain, for THINAIR_PHONE=domain
+#   THINAIR_PUBLIC_IP this machine's public IPv4 (default: looked up once at ipv4.icanhazip.com)
 #   THINAIR_SERVER_URL, THINAIR_RUNNER_TOKEN   runner only; asked for when missing
 #   THINAIR_INSTALL_DOCKER, THINAIR_INSTALL_TAILSCALE, THINAIR_OPEN_FIREWALL   yes | no:
 #                     answer those questions in advance (default: ask; no terminal = no)
@@ -27,7 +30,7 @@ case "${1:-}" in
   --runner) MODE=runner ;;
   "") ;;
   -h | --help)
-    sed -n '2,16p' "$0" 2>/dev/null || echo "See https://github.com/SudeepSigdel/ThinAir"
+    sed -n '2,23p' "$0" 2>/dev/null || echo "See https://github.com/SudeepSigdel/ThinAir"
     exit 0
     ;;
   *) printf 'Unknown option: %s (use --runner or nothing)\n' "$1" >&2; exit 2 ;;
@@ -165,6 +168,19 @@ set_env() { # KEY VALUE: set one line in .env, keeping everything else
   mv .env.tmp .env
 }
 
+unset_env() { # KEY: remove that line from .env
+  { grep -v "^$1=" .env || true; } >.env.tmp
+  mv .env.tmp .env
+}
+
+env_value() { # KEY: its value in .env (empty if unset)
+  sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1
+}
+
+has_subcommand() { # args...: does the running image know this command? (older pinned images)
+  docker compose exec -T thinair thinair "$@" --help >/dev/null 2>&1
+}
+
 wait_healthy() {
   i=0
   until docker compose exec -T thinair python -c \
@@ -175,29 +191,132 @@ wait_healthy() {
   done
 }
 
-# ---- phone access: HTTPS through Tailscale or your own domain -------------------------------
-setup_tailscale() { # port
+# ---- phone access -----------------------------------------------------------------------------
+# Default (THINAIR_PHONE=auto): detect instead of asking. Tailscale already set up with HTTPS ->
+# use it (private). A public IPv4 -> Caddy serves https://<ip-with-dashes>.sslip.io with a Let's
+# Encrypt certificate (no account, no domain). Only when neither works is anything asked.
+NET_KIND="" NET_IP="" NET_HOST="" NET_CLOUD="" ADDRESS_CHANGED=""
+
+dmi() { cat "/sys/class/dmi/id/$1" 2>/dev/null || true; }
+
+given_public_ip() { # set by hand now, or on an earlier run (then saved in .env)
+  printf '%s' "${THINAIR_PUBLIC_IP:-$(env_value THINAIR_PUBLIC_IP)}"
+}
+
+detect_network() { # sets NET_KIND (direct|cloud|nat|none|unknown), NET_IP, NET_HOST, NET_CLOUD
+  NET_KIND=unknown NET_IP="" NET_HOST="" NET_CLOUD=""
+  has_subcommand net detect || return 0 # an older pinned image
+  local_ip=""
+  if command -v ip >/dev/null 2>&1; then # the source address for internet traffic (no packet sent)
+    local_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+  fi
+  if ! out="$(docker compose exec -T thinair thinair net detect --local-ip "$local_ip" \
+    --dmi-vendor "$(dmi sys_vendor)" --dmi-product "$(dmi product_name)" \
+    --dmi-asset "$(dmi chassis_asset_tag)" --public-ip "$(given_public_ip)")"; then
+    die "Could not check this machine's network (see above). THINAIR_PUBLIC_IP must be a public IPv4 address."
+  fi
+  NET_KIND="$(printf '%s\n' "$out" | sed -n 's/^KIND=//p')"
+  NET_IP="$(printf '%s\n' "$out" | sed -n 's/^PUBLIC_IP=//p')"
+  NET_HOST="$(printf '%s\n' "$out" | sed -n 's/^HOST=//p')"
+  NET_CLOUD="$(printf '%s\n' "$out" | sed -n 's/^CLOUD=//p')"
+}
+
+wait_https() { # host seconds: until https://host answers with a valid certificate (via Caddy)
+  waited=0
+  hinted=""
+  say "Getting an HTTPS certificate for $1 from Let's Encrypt (usually under a minute)..."
+  until docker compose exec -T thinair thinair net https-check "$1" --via caddy:443 >/dev/null 2>&1; do
+    if [ "$waited" -ge 45 ] && [ -z "$hinted" ]; then
+      hinted=1
+      say ""
+      docker compose exec -T thinair thinair net firewall-hint --cloud "$NET_CLOUD" || true
+      say "Waiting for that (Caddy keeps retrying by itself; Ctrl-C to stop)..."
+    fi
+    [ "$waited" -lt "$2" ] || return 1
+    sleep 5
+    waited=$((waited + 5))
+    [ $((waited % 60)) -ne 0 ] || say "  still waiting (${waited}s)"
+  done
+  say "HTTPS is ready: https://$1"
+}
+
+use_public_host() { # host: point Caddy and the app at it
+  set_env THINAIR_DOMAIN "$1"
+  set_env THINAIR_PUBLIC_URL "https://$1"
+  set_env COMPOSE_PROFILES https # so every later 'docker compose up' starts Caddy too
+  # A hand-set address is kept, so later checks (and re-runs) trust it instead of a lookup.
+  [ -z "$(given_public_ip)" ] || set_env THINAIR_PUBLIC_IP "$(given_public_ip)"
+}
+
+drop_public_host() {
+  unset_env THINAIR_DOMAIN
+  unset_env THINAIR_PUBLIC_URL
+  unset_env COMPOSE_PROFILES
+  unset_env THINAIR_PUBLIC_IP
+  docker compose --profile https rm -sf caddy >/dev/null 2>&1 || true
+}
+
+setup_public() { # port: https://<ip>.sslip.io through Caddy; returns 1 if it can't work here
+  host="$NET_HOST"
+  use_public_host "$host"
+  if ! docker compose up -d --remove-orphans; then
+    say "Caddy could not start. Is another web server using ports 80 or 443 on this machine?"
+    drop_public_host
+    docker compose up -d --remove-orphans
+    return 1
+  fi
+  wait_healthy
+  [ "$NET_CLOUD" != oracle ] || oracle_firewall
+  case "$NET_KIND" in
+    direct) limit=180 ;;
+    cloud) if has_tty; then limit=900; else limit=300; fi ;;
+    *) limit=90 ;; # nat: nobody may have opened anything for this machine
+  esac
+  wait_https "$host" "$limit" && return 0
+  if [ "$NET_KIND" = nat ]; then
+    if has_tty && confirm "Keep waiting while you open ports 80 and 443?" THINAIR_KEEP_WAITING &&
+      wait_https "$host" 900; then
+      return 0
+    fi
+    say "No HTTPS for $host: this machine isn't reachable from the internet on ports 80/443."
+    drop_public_host
+    docker compose up -d --remove-orphans
+    return 1
+  fi
+  say "HTTPS isn't ready yet. Caddy keeps trying; 'thinair doctor' shows what's missing."
+  return 0
+}
+
+tailscale_cert_domain() { # the tailnet's HTTPS name, empty while certificates are off
+  tailscale status --json 2>/dev/null | docker compose exec -T thinair python -c \
+    "import json,sys; print((json.load(sys.stdin).get('CertDomains') or [''])[0])" 2>/dev/null
+}
+
+setup_tailscale() { # port serve|funnel
   command -v tailscale >/dev/null 2>&1 || install_tailscale
   if ! tailscale status >/dev/null 2>&1; then
     say "Connecting this machine to your tailnet: open the link below and sign in."
     as_root tailscale up || die "Tailscale is installed but not connected. Run 'sudo tailscale up' first."
   fi
-  # CertDomains is filled in only when HTTPS certificates are enabled for the tailnet.
-  host="$(tailscale status --json | docker compose exec -T thinair python -c \
-    "import json,sys; print((json.load(sys.stdin).get('CertDomains') or [''])[0])")"
-  if [ -z "$host" ]; then
-    say "HTTPS certificates are off for your tailnet. Turn on 'HTTPS Certificates' at"
-    say "https://login.tailscale.com/admin/dns, then run this again with THINAIR_PHONE=tailscale."
+  # `tailscale serve` / `funnel` show a consent link when HTTPS certificates (and, for funnel,
+  # the funnel attribute) still need enabling. Changing them needs root or a Tailscale operator.
+  if ! tailscale "$2" --bg --https=443 "http://127.0.0.1:$1" &&
+    ! as_root tailscale "$2" --bg --https=443 "http://127.0.0.1:$1"; then
+    say "'tailscale $2' failed. Try: sudo tailscale $2 --bg --https=443 http://127.0.0.1:$1"
     return 0
   fi
-  # Changing serve settings needs root (or a Tailscale operator), so ask through sudo if needed.
-  if ! tailscale serve --bg --https=443 "http://127.0.0.1:$1" 2>/dev/null &&
-    ! as_root tailscale serve --bg --https=443 "http://127.0.0.1:$1"; then
-    say "'tailscale serve' failed. Try: tailscale serve --bg --https=443 http://127.0.0.1:$1"
+  host="$(tailscale_cert_domain)"
+  if [ -z "$host" ]; then
+    say "HTTPS certificates are off for your tailnet. Turn on 'HTTPS Certificates' at"
+    say "https://login.tailscale.com/admin/dns, then run this again with THINAIR_PHONE=$2."
     return 0
   fi
   set_env THINAIR_PUBLIC_URL "https://$host"
-  say "Phones on your tailnet can open https://$host"
+  if [ "$2" = funnel ]; then
+    say "Anyone can open https://$host (through Tailscale Funnel); nothing to install on the phone."
+  else
+    say "Phones on your tailnet can open https://$host"
+  fi
 }
 
 setup_domain() {
@@ -212,29 +331,81 @@ setup_domain() {
   oracle_firewall
 }
 
-phone_access() { # port
-  choice="${THINAIR_PHONE:-}"
-  if [ -z "$choice" ]; then
-    has_tty || return 0
-    say ""
-    say "How will you open Thinair from your phone? (installing the app needs HTTPS)"
-    if on_oracle_cloud; then
-      say "  1) Tailscale (private, no open ports; recommended on Oracle Cloud: no firewall changes)"
-    else
-      say "  1) Tailscale (private, no open ports; it can be installed for you)"
-    fi
-    say "  2) My own domain (Caddy gets a certificate; ports 80 and 443 must be open)"
-    say "  3) Skip for now"
-    ask "Choose 1, 2 or 3 [3]: " choice
+choose_tunnel() { # port: the one question, asked only when detection found no way in
+  if ! has_tty; then
+    say "Phones can't reach this machine directly. Run this again with THINAIR_PHONE=funnel"
+    say "(Tailscale Funnel, a public link) or THINAIR_PHONE=tailscale (private) to set that up."
+    return 0
   fi
+  say ""
+  say "Phones can't reach this machine directly (it's behind a router or your provider's NAT)."
+  say "  1) Tailscale Funnel: a public https link, nothing to install on the phone (recommended)"
+  say "  2) Tailscale: private, the phone needs the Tailscale app"
+  say "  3) My own domain (its DNS points here and ports 80/443 are forwarded to this machine)"
+  say "  4) Skip for now"
+  ask "Choose 1-4 [1]: " choice
   case "$choice" in
-    1 | tailscale) step "Setting up Tailscale HTTPS" && setup_tailscale "$1" ;;
+    "" | 1) step "Setting up Tailscale Funnel" && setup_tailscale "$1" funnel ;;
+    2) step "Setting up Tailscale HTTPS" && setup_tailscale "$1" serve ;;
+    3) step "Setting up HTTPS for your domain" && setup_domain ;;
+    *) return 0 ;;
+  esac
+}
+
+auto_phone() { # port
+  if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1 &&
+    [ -n "$(tailscale_cert_domain)" ]; then
+    step "Tailscale with HTTPS is set up on this machine: using it (private to your tailnet)"
+    setup_tailscale "$1" serve
+    return 0
+  fi
+  step "Checking how phones can reach this machine"
+  detect_network
+  case "$NET_KIND" in
+    direct | cloud | nat)
+      say "Public IP $NET_IP: setting up https://$NET_HOST"
+      setup_public "$1" && return 0
+      ;;
+    none) say "This machine has no public IPv4 address (carrier NAT, IPv6-only or offline)." ;;
+  esac
+  choose_tunnel "$1"
+}
+
+phone_access() { # port
+  choice="${THINAIR_PHONE:-auto}"
+  case "$choice" in
+    auto) auto_phone "$1" ;;
+    public)
+      step "Setting up HTTPS on this machine's public IP"
+      detect_network
+      [ -n "$NET_HOST" ] || die "No public IPv4 address found. Set THINAIR_PUBLIC_IP=<address>."
+      setup_public "$1" || true
+      ;;
+    1 | tailscale) step "Setting up Tailscale HTTPS" && setup_tailscale "$1" serve ;;
+    funnel) step "Setting up Tailscale Funnel" && setup_tailscale "$1" funnel ;;
     2 | domain) step "Setting up HTTPS for your domain" && setup_domain ;;
-    "" | 3 | skip) return 0 ;;
-    *) die "Unknown choice: $choice (tailscale, domain or skip)" ;;
+    3 | skip) return 0 ;;
+    *) die "Unknown THINAIR_PHONE: $choice (auto, public, tailscale, funnel, domain or skip)" ;;
   esac
   docker compose up -d --remove-orphans # picks up the new settings
   wait_healthy
+}
+
+refresh_public_address() { # on re-runs: follow a changed public IP (sslip.io names only)
+  old="$(env_value THINAIR_DOMAIN)"
+  case "$old" in *.sslip.io) ;; *) return 0 ;; esac
+  detect_network
+  if [ -z "$NET_HOST" ]; then
+    [ "$NET_KIND" = unknown ] || say "Could not look up this machine's public IP; keeping https://$old"
+    return 0
+  fi
+  [ "$NET_HOST" != "$old" ] || return 0
+  step "This machine's public IP changed: moving Thinair to https://$NET_HOST"
+  use_public_host "$NET_HOST"
+  docker compose up -d --remove-orphans
+  wait_healthy
+  wait_https "$NET_HOST" 180 || say "HTTPS isn't ready yet; 'thinair doctor' shows what's missing."
+  ADDRESS_CHANGED=1
 }
 
 random_token() { # like `thinair init`: thinair_ + 32 random bytes, URL-safe base64
@@ -350,49 +521,73 @@ if [ "$MODE" = runner ]; then
 fi
 
 wait_healthy
-port="$(sed -n 's/^THINAIR_PORT=//p' .env | tail -n 1)"
-# Asked on the first install only (or whenever THINAIR_PHONE is given).
+port="$(env_value THINAIR_PORT)"
+# Set up on the first install (or whenever THINAIR_PHONE is given); on later runs only follow a
+# changed public IP. Existing Tailscale or own-domain setups are never touched.
 if [ -n "$NEW_TOKEN" ] || [ -n "${THINAIR_PHONE:-}" ]; then
   phone_access "${port:-8080}"
+else
+  refresh_public_address
 fi
 
 # Older images (pinned with THINAIR_VERSION) may not have these commands: then skip them.
-if docker compose exec -T thinair thinair images --help >/dev/null 2>&1; then
-  step "Preparing the sandbox images (one time, so your first job starts right away)"
-  docker compose exec -T thinair thinair images ||
-    say "Could not prepare them now; the first job will do it."
+if has_subcommand images; then
+  # In the background: the phone can be set up meanwhile (the first job would wait for them).
+  docker compose exec -d thinair thinair images >/dev/null 2>&1 ||
+    say "Could not start preparing the sandbox images; the first job will do it."
 fi
-if docker compose exec -T thinair thinair doctor --help >/dev/null 2>&1; then
-  step "Checking the setup"
-  docker compose exec -T thinair thinair doctor || true
+if has_subcommand doctor; then
+  # Only problems are shown here; `thinair doctor` prints the full list any time.
+  if ! report="$(docker compose exec -T thinair thinair doctor 2>&1)"; then
+    step "Something needs your attention"
+    printf '%s\n' "$report"
+  fi
 fi
 
-bind="$(sed -n 's/^THINAIR_BIND=//p' .env | tail -n 1)"
-public="$(sed -n 's/^THINAIR_PUBLIC_URL=//p' .env | tail -n 1)"
+bind="$(env_value THINAIR_BIND)"
+public="$(env_value THINAIR_PUBLIC_URL)"
+domain="$(env_value THINAIR_DOMAIN)"
+show_qr=""
+if [ -n "$public" ] && { [ -n "$NEW_TOKEN" ] || [ -n "$ADDRESS_CHANGED" ] || [ -n "${THINAIR_PHONE:-}" ]; }; then
+  show_qr=1
+fi
 say ""
-say "Thinair is running."
+if [ -n "$public" ]; then
+  say "Thinair is running at $public"
+else
+  say "Thinair is running."
+  say ""
+  say "  Open:      http://localhost:${port:-8080}   (on this machine)"
+fi
+if [ -n "$show_qr" ] && has_subcommand qr; then
+  say ""
+  [ -z "$ADDRESS_CHANGED" ] || say "The address changed, so sign your phone in again (one scan):"
+  if docker compose exec -T thinair thinair qr --help 2>/dev/null | grep -q -- --ttl; then
+    docker compose exec -T thinair thinair qr --ttl 30 || true
+  else
+    docker compose exec -T thinair thinair qr || true
+  fi
+  say "(New code any time: cd $DIR && docker compose exec thinair thinair qr)"
+fi
+if [ -n "$domain" ] && [ -n "$public" ]; then
+  say ""
+  say "Anyone on the internet can open this address. Signing in needs a one-time QR code"
+  say "('thinair qr') or your token. To keep it private, run this again with THINAIR_PHONE=tailscale,"
+  say "or allow only your own IP address to ports 80 and 443 in your provider's firewall."
+fi
 say ""
-say "  Open:      http://localhost:${port:-8080}   (on this machine)"
-[ -z "$public" ] || say "  Phone:     $public"
-if [ -n "$NEW_TOKEN" ]; then
+if [ -n "$NEW_TOKEN" ] && [ -z "$public" ]; then
   say "  Token:     $NEW_TOKEN"
   say "             (log in with it; it is also saved in $DIR/.env)"
 else
-  say "  Token:     THINAIR_ADMIN_TOKEN in $DIR/.env"
-fi
-if [ -n "$public" ] && [ -n "$NEW_TOKEN" ] &&
-  docker compose exec -T thinair thinair qr --help >/dev/null 2>&1; then
-  say ""
-  say "Sign your phone in: scan this with its camera."
-  docker compose exec -T thinair thinair qr || true
-  say "(New code any time: cd $DIR && docker compose exec thinair thinair qr)"
+  say "  Token:     THINAIR_ADMIN_TOKEN in $DIR/.env (to log in from a browser)"
 fi
 say ""
 say "Next steps:"
 if [ -z "$public" ] && [ "${bind:-127.0.0.1}" = 127.0.0.1 ]; then
-  say "  - Phone access: a tunnel (Tailscale or Cloudflare) to http://localhost:${port:-8080}, or your"
-  say "    own domain: THINAIR_DOMAIN=... in .env, then: docker compose --profile https up -d"
-  say "    Details: https://github.com/SudeepSigdel/ThinAir#using-it-from-your-phone"
+  say "  - Phone access: run this again with THINAIR_PHONE=auto (public IP), funnel or tailscale,"
+  say "    or domain with THINAIR_DOMAIN=... Details:"
+  say "    https://github.com/SudeepSigdel/ThinAir#using-it-from-your-phone"
 fi
 say "  - Log in an agent:  cd $DIR && docker compose exec thinair thinair auth claude --print-command"
 say "  - Upgrade later:    run this installer again"

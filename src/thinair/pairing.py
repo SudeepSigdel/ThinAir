@@ -24,12 +24,19 @@ def _hash(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
 
 
-def create_pairing_code(session: Session, user_id: str | None = None) -> str:
-    """A fresh code for `user_id` (None = the owner). Expired codes are cleaned up here."""
+MAX_TTL = timedelta(hours=1)
+
+
+def create_pairing_code(session: Session, user_id: str | None = None, ttl: timedelta = TTL) -> str:
+    """A fresh code for `user_id` (None = the owner), valid for `ttl` (at most an hour; the
+    installer uses 30 minutes so there is time to set up the phone). Expired codes are cleaned
+    up here."""
+    if not timedelta(0) < ttl <= MAX_TTL:
+        raise ValueError("a pairing code lives between 1 second and 1 hour")
     now = utcnow()
     session.exec(delete(PairingCode).where(PairingCode.expires_at < now))  # type: ignore[call-overload,arg-type]
     code = CODE_PREFIX + secrets.token_urlsafe(32)
-    session.add(PairingCode(code_hash=_hash(code), user_id=user_id, expires_at=now + TTL))
+    session.add(PairingCode(code_hash=_hash(code), user_id=user_id, expires_at=now + ttl))
     session.commit()
     return code
 
