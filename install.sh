@@ -132,33 +132,21 @@ install_tailscale() {
   rm -f "$tmp"
 }
 
-oracle_firewall() { # Oracle Cloud blocks 80/443 twice: in its console and on the machine itself
+oracle_firewall() { # Oracle Cloud blocks 80/443 in its console (and, on Oracle Linux, firewalld)
   on_oracle_cloud || return 0
   say ""
-  say "This is an Oracle Cloud machine. Ports 80 and 443 are blocked in two places:"
-  say "  1. Oracle's console: Networking > Virtual cloud networks > (your network) > Security"
-  say "     Lists > Default Security List > Add Ingress Rules: source 0.0.0.0/0, TCP, port 80;"
-  say "     then the same for port 443. Only you can do this one."
-  say "  2. This machine's own firewall."
-  if confirm "Open ports 80 and 443 in this machine's firewall now?" THINAIR_OPEN_FIREWALL; then
-    if command -v firewall-cmd >/dev/null 2>&1; then # Oracle Linux
-      as_root firewall-cmd --permanent --add-service=http --add-service=https &&
-        as_root firewall-cmd --reload
-    elif command -v iptables >/dev/null 2>&1; then # Oracle's Ubuntu images
-      for p in 443 80; do
-        as_root iptables -C INPUT -p tcp --dport "$p" -m state --state NEW -j ACCEPT 2>/dev/null ||
-          as_root iptables -I INPUT 1 -p tcp --dport "$p" -m state --state NEW -j ACCEPT
-      done
-      if command -v netfilter-persistent >/dev/null 2>&1; then
-        as_root netfilter-persistent save
-      else
-        say "Opened until the next reboot (netfilter-persistent is not installed to keep it)."
-      fi
-    else
-      say "No firewall tool found here; nothing to change on this machine."
-    fi
+  say "This is an Oracle Cloud machine. Open ports 80 and 443 in Oracle's console (only you can):"
+  say "  Networking > Virtual cloud networks > (your network) > Security Lists > Default Security"
+  say "  List > Add Ingress Rules: source 0.0.0.0/0, TCP, destination port 80,443."
+  # Oracle's Ubuntu images also end INPUT with a REJECT rule, but Caddy's ports are published by
+  # Docker, whose traffic never passes INPUT (tested on an Oracle Ubuntu VM, 2026-11-14). So
+  # nothing to change there. firewalld (Oracle Linux) is untested, so that offer stays.
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  if confirm "Also open ports 80 and 443 in this machine's firewalld?" THINAIR_OPEN_FIREWALL; then
+    as_root firewall-cmd --permanent --add-service=http --add-service=https &&
+      as_root firewall-cmd --reload
   else
-    say "Skipped. Without both steps phones can't reach Thinair through your domain."
+    say "Skipped. If phones still can't connect: sudo firewall-cmd --permanent --add-service=http --add-service=https"
   fi
 }
 
@@ -256,17 +244,44 @@ drop_public_host() {
   docker compose --profile https rm -sf caddy >/dev/null 2>&1 || true
 }
 
+TS_HELD="" # serve|funnel when Tailscale had port 443 before Caddy took it
+
+tailscale_holds_443() { # serve|funnel when `tailscale serve/funnel` uses port 443, else empty
+  command -v tailscale >/dev/null 2>&1 || return 0
+  status="$(tailscale serve status 2>/dev/null || true)"
+  # Port 443 is listed as "https://<name> (...)"; other ports as "https://<name>:<port>".
+  printf '%s\n' "$status" | grep -Eq '^https://[^ :]+ ' || return 0
+  if printf '%s\n' "$status" | grep -q 'Funnel on'; then echo funnel; else echo serve; fi
+}
+
+release_tailscale_443() { # Tailscale listens on its own address:443, so Docker can't publish 443
+  TS_HELD="$(tailscale_holds_443)"
+  [ -n "$TS_HELD" ] || return 0
+  say "Turning off 'tailscale $TS_HELD' on port 443: Caddy needs that port."
+  say "(To go back later: run this again with THINAIR_PHONE=tailscale.)"
+  tailscale serve --https=443 off >/dev/null 2>&1 || as_root tailscale serve --https=443 off >/dev/null ||
+    say "Could not turn it off; Caddy will fail to start. Try: sudo tailscale serve --https=443 off"
+}
+
+restore_tailscale_443() { # port: put back what release_tailscale_443 turned off
+  [ -n "$TS_HELD" ] || return 0
+  say "Putting 'tailscale $TS_HELD' back."
+  setup_tailscale "$1" "$TS_HELD"
+  TS_HELD=""
+}
+
 setup_public() { # port: https://<ip>.sslip.io through Caddy; returns 1 if it can't work here
   host="$NET_HOST"
+  release_tailscale_443
   use_public_host "$host"
   if ! docker compose up -d --remove-orphans; then
     say "Caddy could not start. Is another web server using ports 80 or 443 on this machine?"
     drop_public_host
+    restore_tailscale_443 "$1"
     docker compose up -d --remove-orphans
     return 1
   fi
   wait_healthy
-  [ "$NET_CLOUD" != oracle ] || oracle_firewall
   case "$NET_KIND" in
     direct) limit=180 ;;
     cloud) if has_tty; then limit=900; else limit=300; fi ;;
@@ -280,6 +295,7 @@ setup_public() { # port: https://<ip>.sslip.io through Caddy; returns 1 if it ca
     fi
     say "No HTTPS for $host: this machine isn't reachable from the internet on ports 80/443."
     drop_public_host
+    restore_tailscale_443 "$1"
     docker compose up -d --remove-orphans
     return 1
   fi

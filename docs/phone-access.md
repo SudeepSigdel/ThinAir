@@ -34,12 +34,23 @@ sent for an address that isn't ours):
 - Through Caddy: pairing sets a `Secure` cookie, HSTS present, `/docs` and `/openapi.json`
   answer 401, HTTP redirects to HTTPS.
 
+## Tested on a real Oracle VM (2026-11-14, Ubuntu, Ampere A1, phase-1 image built on the VM)
+
+- Ports 80/443 closed in the security list: outside connections time out (no packets arrive).
+  After adding the ingress rule, a Docker-published port 80 answered from outside (tcpdump showed
+  the SYN in and SYN-ACK out) with Oracle's iptables `INPUT ... REJECT` rule untouched: Docker's
+  DNAT/FORWARD path never passes INPUT. So the installer no longer offers iptables rules.
+- `THINAIR_PHONE=public` on a machine already set up with Tailscale: `tailscale serve` listens on
+  the tailnet address:443, so Docker could not publish 443 ("address already in use"). The
+  installer now turns that handler off first (and puts it back if public mode fails).
+- Real Let's Encrypt certificate for `152-67-4-135.sslip.io` (issuer YE2) in under a minute;
+  from outside: `/healthz` 200 with a verified certificate, `/docs` and `/openapi.json` 401,
+  HTTP 308 to HTTPS, HSTS; doctor's Public address and HTTPS checks ok.
+
 ## Not verified yet
 
-- A real Let's Encrypt certificate for an sslip.io name on a real public VM (owner's manual test).
-- Oracle: whether Oracle's iptables rules block Docker-published ports at all (Docker uses the
-  FORWARD path, Oracle's REJECT rule that matters is in INPUT). The installer keeps offering the
-  INPUT rules, as before.
+- Oracle Linux (firewalld): whether it blocks Docker-published ports. The installer still offers
+  to open 80/443 there.
 - Tailscale: that `serve`/`funnel --bg` show the consent link and then succeed on a tailnet with
   HTTPS certificates off.
 - Let's Encrypt IP-address certificates (generally available since 2026-01-15) through Caddy:

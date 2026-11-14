@@ -1535,5 +1535,16 @@ Deviations from the plan, and why:
 Follow-ups:
 - Phase 3: when the IP changes, also update the GitHub App's callback/setup URLs (there is no app yet).
 - 1 MB request-body cap on JSON routes (plan 4.5) is not done yet.
-- Owner's manual tests: a real certificate on a public VM, Oracle with a closed security list,
-  Tailscale consent link (see docs/phone-access.md "Not verified yet").
+- Owner's manual tests still open: Tailscale consent link, Oracle Linux firewalld (see
+  docs/phone-access.md "Not verified yet").
+
+Real Oracle VM test (2026-11-14, Ubuntu on Ampere A1, phase-1 image built on the VM):
+- Closed security list: outside connections time out. After the ingress rule, Let's Encrypt
+  issued a real certificate for `152-67-4-135.sslip.io` in under a minute; /docs 401, HTTP 308,
+  HSTS and doctor's new checks all good from outside.
+- Oracle's iptables `INPUT ... REJECT` does not affect Docker-published ports (tcpdump: SYN in,
+  SYN-ACK out, rule untouched). The installer's iptables offer is removed; it now only explains the
+  console rule (firewalld on Oracle Linux still offered, untested).
+- Bug found and fixed: `THINAIR_PHONE=public` on a Tailscale install failed because `tailscale
+  serve` holds the tailnet address:443, so Docker can't publish 0.0.0.0:443. The installer now
+  turns that handler off first and restores it if public mode fails.

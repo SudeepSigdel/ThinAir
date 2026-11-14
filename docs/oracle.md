@@ -35,20 +35,16 @@ the machine: the installer waits five minutes for the certificate without a term
 ## 2. Open ports 80 and 443 (once)
 
 Thinair gets its HTTPS certificate from Let's Encrypt, which has to reach the machine on port 80
-or 443. Oracle blocks both in two places:
+or 443. Oracle blocks both in its console, and only you can open them there: Networking >
+Virtual cloud networks > your network > Security Lists > Default Security List > **Add Ingress
+Rules**: source `0.0.0.0/0`, IP protocol TCP, destination port range `80,443`. If the instance
+uses a Network Security Group, add the same rule there.
 
-1. **In the console (only you can do this):** Networking > Virtual cloud networks > your network
-   > Security Lists > Default Security List > **Add Ingress Rules**: source `0.0.0.0/0`, IP
-   protocol TCP, destination port range `80,443`.
-2. **On the machine:** Oracle's Ubuntu images reject most incoming traffic in iptables. The
-   installer notices it is on Oracle Cloud and offers to add rules for 80 and 443 (saved with
-   `netfilter-persistent`). By hand:
-
-   ```sh
-   sudo iptables -I INPUT 1 -p tcp --dport 80 -m state --state NEW -j ACCEPT
-   sudo iptables -I INPUT 1 -p tcp --dport 443 -m state --state NEW -j ACCEPT
-   sudo netfilter-persistent save
-   ```
+Nothing needs changing on the machine itself. Oracle's Ubuntu images do reject most incoming
+traffic in iptables (`INPUT`), but Docker publishes Caddy's ports through its own rules, which
+that chain never sees (tested on an Oracle Ubuntu VM, 2026-11-14). Only for your own services
+outside Docker would you add `sudo iptables -I INPUT 1 -p tcp --dport <port> -m state --state NEW -j ACCEPT`.
+On Oracle Linux (firewalld; untested) the installer offers to open 80 and 443.
 
 ## 3. Install (if you didn't use the cloud-init script)
 
