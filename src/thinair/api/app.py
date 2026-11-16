@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from thinair import __version__, setup_state
 from thinair.agents.login import DockerLoginBackend, LoginBackend, LoginHub
-from thinair.api import auth, github_api, login_api, routes, runner_api, setup_api
+from thinair.api import auth, github_api, login_api, push_api, routes, runner_api, setup_api
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
@@ -19,7 +19,7 @@ from thinair.db.models import Job, JobKind
 from thinair.db.session import get_engine, session_scope
 from thinair.jobs.executors import default_executors
 from thinair.jobs.service import Executor, JobService
-from thinair.notify import NotifyConfigError, notifier_from_settings
+from thinair.notify import NotifyConfigError, WebPushNotifier, notifier_from_settings
 from thinair.retention import retention_loop
 from thinair.runners import RunnerHub, make_remote_executor
 
@@ -44,10 +44,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     settings = get_settings()
     try:
-        notifier = notifier_from_settings()
+        telegram = notifier_from_settings()
     except NotifyConfigError as e:
-        logging.getLogger("thinair").error("notifications disabled: %s", e)
-        notifier = None
+        logging.getLogger("thinair").error("telegram notifications disabled: %s", e)
+        telegram = None
+    webpush = WebPushNotifier() if settings.web_push else None
+    notifier = telegram
     hub = RunnerHub()
 
     def goes_remote(job: Job) -> bool:
@@ -62,6 +64,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         job_timeout_s=settings.job_timeout_s,
         sweep_on_start=settings.sweep_on_start,
         notifier=notifier,
+        push_notifier=webpush,
+        attention_notifier=webpush.attention if webpush else None,
         remote_executor=make_remote_executor(hub),
         goes_remote=goes_remote,
     )
@@ -118,6 +122,7 @@ def create_app(
     app.include_router(github_api.router)
     app.include_router(github_api.open_router)
     app.include_router(setup_api.router)
+    app.include_router(push_api.router)
     app.include_router(setup_api.open_router)
     app.include_router(runner_api.admin_router)
     app.include_router(runner_api.runner_router)

@@ -1663,3 +1663,32 @@ product (needs a person); `thinair stats` is what records it.
 
 Follow-ups: the owner's stopwatch run (replace the estimates in section 1 with `thinair stats` numbers); phase 5 adds
 the notifications step.
+
+### Phase 5: Notifications and install (2026-11-17, branch `onboarding-v2/phase-5-push`)
+
+Shipped:
+- `push.py` (VAPID, RFC 8291 encryption, allowlisted sender), migration 0012 (`PushSubscription`), `api/push_api.py`,
+  `WebPushNotifier` + shared `job_summary()`, the attention hook with a 60 s debounce, `THINAIR_WEB_PUSH`.
+- `sw.js` `push` / `notificationclick`, manifest `id` and `share_target`, the O6 banner (Projects and running job),
+  iOS Add-to-Home-Screen steps, Android install button, share-a-GitHub-link handling.
+- Doctor `push` check; README "Notifications" rewritten (Web Push first, Telegram kept as the alternative).
+
+[verify in build] results:
+- RFC 8291: the encryption reproduces the RFC's Appendix A message byte for byte (values read from the RFC text).
+- `sw.js` `push` handler reads the same JSON the server sends for Declarative Web Push and calls `showNotification`;
+  checked in a real Edge with the push manager stubbed (banner, subscribe, test, iOS sheet, install, share). Delivery
+  through a real push service, iOS 16.4+/18.4+ behaviour and the iOS cookie carry-over are NOT verified: they need
+  real phones (see the pull request's manual steps).
+
+Deviations / decisions (please review):
+- `JobService` keeps Telegram in `notifier` and takes Web Push as `push_notifier`: an existing test requires
+  `_notifier is None` when Telegram settings are malformed, so the plan's "compose the notifiers" is done inside the
+  service instead of in `app.py`.
+- The banner appears on Projects and on a running job (there is no Settings screen until phase 6); "Not now" is
+  remembered per browser.
+- VAPID `sub` is the server's https `THINAIR_PUBLIC_URL`, else `mailto:thinair@example.com` (the spec needs one of the
+  two; nothing personal is sent).
+- A test notification goes to all of the caller's own devices; at most 20 devices per person, one per login.
+- Declarative Web Push `navigate` is an absolute https URL when `THINAIR_PUBLIC_URL` is https, else a path.
+
+Follow-ups: the owner's real-phone tests (below); phase 6 moves the banner into Settings.

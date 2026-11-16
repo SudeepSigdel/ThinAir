@@ -328,9 +328,38 @@ By default (`THINAIR_RUNNER_PLACEMENT=auto`) a profile job goes to a runner when
 runs on the server otherwise. Runners only ever get profile jobs. They never receive the
 server's GitHub token, agent logins or API keys. See [docs/runners.md](docs/runners.md).
 
-## Notifications (Telegram)
+## Notifications
 
-Get a message when a job finishes, with a link back to it:
+### On your phone, with no account (Web Push)
+
+When a job finishes, or an agent conversation needs your approval or your turn, Thinair sends a
+notification to your phone. Open the app and tap **Turn on** in the "Get told when it's done"
+banner (it shows on Projects and on a running job). Tap it, allow notifications, done: **no bot,
+no token, no `.env`**.
+
+- **Android and desktop (Chrome, Edge, Firefox):** the browser asks for permission. The banner
+  also offers **Install the app** when the browser supports it.
+- **iPhone and iPad (iOS 16.4 or newer):** Apple only delivers notifications to apps on the Home
+  Screen. Tap Share, **Add to Home Screen**, open Thinair from there and tap **Turn on**. Signing
+  in again after adding it may be needed (the Home Screen app has its own storage): `thinair qr
+  --short` gives a code to type.
+- **Send a test** checks it works. **Turn off** removes the phone. Revoking a phone's token
+  (`thinair token revoke`) or disabling a user also stops their notifications.
+- Each person gets the notifications for **their own** jobs, on their own devices.
+- **Share a link into the app (Android):** share a `https://github.com/owner/repo` link to Thinair
+  and the add-project form opens with it filled in.
+
+What is sent: the repo name, job kind and outcome, the first line of the task, and a short error
+or result. Never logs, diffs or summaries. The message is encrypted end to end to your phone
+(RFC 8291), so Google, Mozilla, Apple or Microsoft (whichever runs your browser's push service)
+only sees that a message of some size was sent to your device. Thinair only sends; nothing polls,
+so idle cost stays zero. The server's push key (`secrets/vapid.json`, mode 0600) is created on first
+use; `THINAIR_WEB_PUSH=false` turns the feature off and never creates it. Thinair will only send
+to the push services' own addresses (a crafted subscription can't make it call anything else).
+
+### Telegram (an alternative)
+
+Prefer Telegram? Get a message when a job finishes, with a link back to it:
 
 1. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token.
 2. Send your new bot any message, then open

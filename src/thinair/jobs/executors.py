@@ -164,6 +164,8 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
                 if ev.data:
                     payload["data"] = ev.data
                 ctx.emit(EventType.AGENT_MSG, payload)
+                if ev.kind in ("permission_request", "waiting") and ctx.attention:
+                    ctx.attention(ev.kind)
         r = adapter.result()
         with session_scope() as s:
             s.add(

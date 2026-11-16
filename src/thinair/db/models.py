@@ -116,6 +116,22 @@ class SetupEvent(SQLModel, table=True):
     value: str | None = None
 
 
+class PushSubscription(SQLModel, table=True):
+    """One phone's Web Push subscription. Tied to the API token that created it: revoking the
+    token (or disabling the user) deletes it, so a revoked phone stops getting notifications.
+    Also deleted when the push service says it is gone, or after 5 failures in a row."""
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    user_id: str | None = Field(default=None, foreign_key="user.id")  # None = the owner
+    token_id: str = Field(foreign_key="apitoken.id", index=True)
+    endpoint: str = Field(unique=True)
+    p256dh: str
+    auth: str
+    created_at: datetime = Field(default_factory=utcnow)
+    last_ok_at: datetime | None = None
+    failures: int = 0
+
+
 class Runner(SQLModel, table=True):
     """Another machine that runs profile jobs for this server. It connects *to* the server with
     its own secret (only the SHA-256 is stored, like API tokens)."""

@@ -122,7 +122,7 @@ async function api(path, options = {}) {
 
 // ---- views ---------------------------------------------------------------------------------
 function hideAll() {
-  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin", "view-github", "view-pick", "view-setup", "view-setup-agent", "view-first", "view-health", "setup-bar"]) {
+  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin", "view-github", "view-pick", "view-setup", "view-setup-agent", "view-first", "view-health", "setup-bar", "push-banner"]) {
     show(id, false);
   }
   if (current.events) current.events.close();
@@ -184,7 +184,12 @@ async function route() {
 async function showHome() {
   hideAll();
   show("view-home");
+  if (sharedRepo) {
+    $("repo-url").value = sharedRepo; // a GitHub link shared into the app: ready to add
+    sharedRepo = null;
+  }
   offerPicker();
+  offerNotifications();
   offerSetup();
   show("health-link-box", isAdmin);
   await Promise.all([loadRepos(), loadJobs()]);
@@ -481,7 +486,13 @@ async function showJob(id) {
   follow(id);
 }
 
+let pushOfferedFor = null;
+
 function renderJob(job) {
+  if (!TERMINAL.has(job.status) && pushOfferedFor !== job.id) {
+    pushOfferedFor = job.id; // once per job: the banner on a running job
+    offerNotifications();
+  }
   $("job-title").textContent = job.repo_name;
   $("job-back").textContent = `‹ ${job.repo_name}`;
   $("job-back").setAttribute("href", `#/repo/${job.repo_id}`);
@@ -1697,6 +1708,133 @@ async function pairWithCode(ev) {
   }
 }
 
+// ---- notifications (Web Push) and installing the app ----------------------------------------------
+let sharedRepo = null;
+let pushState = { enabled: false, subscribed: false, key: null, deferredInstall: null };
+
+window.addEventListener("beforeinstallprompt", (ev) => {
+  ev.preventDefault(); // keep it for our own button
+  pushState.deferredInstall = ev;
+  if (!$("push-banner").hidden) show("push-install");
+});
+
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+function isIos() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function urlBase64ToUint8Array(text) {
+  const pad = "=".repeat((4 - (text.length % 4)) % 4);
+  const raw = atob((text + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+// Shown on Projects and on a running job, once the person has something to be told about.
+async function offerNotifications() {
+  show("push-banner", false);
+  if (storeGet("thinair.push.dismissed")) return;
+  let st;
+  try {
+    st = await api("/api/push");
+  } catch {
+    return;
+  }
+  pushState.enabled = st.enabled;
+  pushState.subscribed = st.subscribed;
+  pushState.key = st.public_key;
+  if (!st.enabled || st.subscribed) return;
+  // iOS only delivers pushes to the Home Screen app; elsewhere the browser must support them.
+  if (!pushSupported() && !(isIos() && !isStandalone())) return;
+  for (const id of ["push-ios", "push-test", "push-off"]) show(id, false);
+  show("push-on");
+  show("push-later");
+  show("push-install", Boolean(pushState.deferredInstall));
+  showError("push-error", "");
+  $("push-text").textContent = "One notification when a job finishes or needs your answer.";
+  show("push-banner");
+}
+
+async function turnOnPush() {
+  showError("push-error", "");
+  if (isIos() && !isStandalone()) {
+    show("push-ios"); // push needs the Home Screen app
+    $("push-text").textContent = "Add Thinair to your Home Screen first.";
+    return;
+  }
+  const button = $("push-on");
+  button.disabled = true;
+  try {
+    const permission = await Notification.requestPermission(); // from this tap, as browsers require
+    if (permission !== "granted") {
+      showError("push-error", "Notifications are blocked for this site. Allow them in your browser's site settings.");
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub =
+      (await reg.pushManager.getSubscription()) ||
+      (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(pushState.key) }));
+    const j = sub.toJSON();
+    await api("/api/push/subscriptions", { method: "POST", body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys }) });
+    pushState.subscribed = true;
+    $("push-text").textContent = "On. You'll hear from Thinair when a job ends.";
+    for (const id of ["push-on", "push-later", "push-ios", "push-install"]) show(id, false);
+    show("push-test");
+    show("push-off");
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("push-error", `Couldn't turn notifications on. ${e.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function sendPushTest() {
+  showError("push-error", "");
+  try {
+    const r = await api("/api/push/test", { method: "POST" });
+    if (!r.sent) showError("push-error", "No phone received it. Turn notifications off and on again.");
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("push-error", e.message);
+  }
+}
+
+async function turnOffPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await api("/api/push/subscriptions", { method: "DELETE", body: JSON.stringify({ endpoint: sub.endpoint }) });
+      await sub.unsubscribe();
+    }
+    show("push-banner", false);
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("push-error", e.message);
+  }
+}
+
+async function installApp() {
+  const ev = pushState.deferredInstall;
+  if (!ev) return;
+  ev.prompt();
+  await ev.userChoice.catch(() => {});
+  pushState.deferredInstall = null;
+  show("push-install", false);
+}
+
+// "Share" a GitHub link to Thinair (Android): /?url=...&text=... opens the add-project form.
+function handleShare() {
+  const q = new URLSearchParams(location.search);
+  if (![...q.keys()].some((k) => ["url", "text", "title"].includes(k))) return null;
+  const hay = ["url", "text", "title"].map((k) => q.get(k) || "").join(" ");
+  const m = hay.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
+  history.replaceState(null, "", location.pathname + "#/"); // drop the query: it is only a hand-off
+  return m ? m[0] : null;
+}
+
 // ---- start ---------------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   $("login-form").addEventListener("submit", login);
@@ -1715,6 +1853,14 @@ document.addEventListener("DOMContentLoaded", () => {
   $("retry").addEventListener("click", retryJob);
   $("logout").addEventListener("click", logout);
   $("pair-form").addEventListener("submit", pairWithCode);
+  $("push-on").addEventListener("click", turnOnPush);
+  $("push-test").addEventListener("click", sendPushTest);
+  $("push-off").addEventListener("click", turnOffPush);
+  $("push-install").addEventListener("click", installApp);
+  $("push-later").addEventListener("click", () => {
+    storeSet("thinair.push.dismissed", "1");
+    show("push-banner", false);
+  });
   $("pick-url-form").addEventListener("submit", addFromUrl);
   $("setup-skip").addEventListener("click", skipStep);
   $("setup-continue").addEventListener("click", setupContinue);
@@ -1764,6 +1910,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  sharedRepo = handleShare();
   pairFromLink().then((paired) => {
     if (paired !== "failed") route();
   });

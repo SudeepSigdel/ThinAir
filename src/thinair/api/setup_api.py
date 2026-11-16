@@ -19,6 +19,7 @@ from thinair import __version__, doctor, setup_state
 from thinair.api.auth import Principal, _client_key, require_admin, require_auth
 from thinair.api.github_api import status_payload
 from thinair.api.login_api import login_volume
+from thinair.config import get_settings
 from thinair.db.models import Job, JobKind, JobStatus
 from thinair.db.session import session_scope
 from thinair.jobs.executors import agents_dir
@@ -56,7 +57,8 @@ def meta(request: Request) -> dict:
     if len(_meta_hits) > 10_000:
         for k in [k for k, v in _meta_hits.items() if not v or v[-1] < now - 60]:
             del _meta_hits[k]
-    return {"version": __version__, "api": API_VERSION, "features": FEATURES}
+    features = [*FEATURES, "push"] if get_settings().web_push else list(FEATURES)
+    return {"version": __version__, "api": API_VERSION, "features": features}
 
 
 # ---- the checklist ------------------------------------------------------------------------------

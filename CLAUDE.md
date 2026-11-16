@@ -490,6 +490,28 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (admin link at the bottom of Projects). `#/setup/project` shows an address field when GitHub isn't connected. Screens
   render before their data arrives: browser tests must poll for text (a `textIs` helper), not read once.
 
+## Web Push (`src/thinair/push.py`, `notify.py` `WebPushNotifier`, `api/push_api.py`, onboarding v2 phase 5)
+- `push.py`: VAPID key in `secrets/vapid.json` (generated on first use, never when `THINAIR_WEB_PUSH=false`), ES256 JWT
+  (12 h, `aud` = the push service origin, `sub` = the https public URL or `mailto:thinair@example.com`), RFC 8291
+  `aes128gcm` encryption on `cryptography` (HKDF + AESGCM; `test_push.py` checks it against RFC 8291's own Appendix A
+  vector), `send()` (blocking, `allow_redirects=False`, errors never contain the endpoint: it identifies a device).
+  `endpoint_allowed`: https, no userinfo/port/IP literal, host `fcm.googleapis.com` or a subdomain of
+  `push.services.mozilla.com` / `push.apple.com` / `notify.windows.com`.
+- `PushSubscription` (migration 0012) tied to the creating API token: `auth.revoke_token` and `users.disable_user` delete
+  them; 404/410 deletes at once, 5 failures in a row delete. One per login, 20 per person. Routes `/api/push` (GET status +
+  public key, POST/DELETE `/subscriptions`, POST `/test` 10 s cooldown). Payload `{"web_push": 8030, "notification":
+  {title, body, navigate, tag}}` (iOS 18.4+ shows it natively; `sw.js` `push`/`notificationclick` do it elsewhere and
+  only open same-origin addresses).
+- `notify.job_summary()` feeds Telegram (`job_message`, byte-identical) and `WebPushNotifier` (to the JOB OWNER's
+  subscriptions only). `JobService(notifier=<Telegram>, push_notifier=, attention_notifier=)`: keep Telegram in
+  `notifier` (an existing test requires `_notifier is None` when its settings are bad). Each notifier runs on its own
+  and never touches the job. `JobService.attention(job_id, kind)` (agent executor calls it on `permission_request` /
+  `waiting` via `ctx.attention`) is debounced to one push per job per 60 s; tests move the clock through
+  `service._now`, never `time.monotonic` (that would freeze asyncio).
+- UI: banner `#push-banner` on Projects and on a running job (once per job), iOS Add-to-Home-Screen steps, Android
+  `beforeinstallprompt` -> "Install the app", "Not now" remembered in localStorage; manifest `id` + `share_target`
+  (a shared GitHub link prefills the add-project form). Real push delivery is untested here (needs a real phone).
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

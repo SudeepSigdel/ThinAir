@@ -28,6 +28,25 @@
   <main>
     <p id="loading" class="muted">Loading…</p>
 
+    <!-- Notifications banner (Projects and a running job) -->
+    <aside id="push-banner" class="setup-card" hidden>
+      <strong>Get told when it's done</strong>
+      <p id="push-text" class="muted">One notification when a job finishes or needs your answer.</p>
+      <ol id="push-ios" class="muted" hidden>
+        <li>Tap the Share button.</li>
+        <li>Tap Add to Home Screen.</li>
+        <li>Open Thinair from there and turn notifications on.</li>
+      </ol>
+      <div class="actions">
+        <button id="push-on" type="button">Turn on</button>
+        <button id="push-test" type="button" class="secondary" hidden>Send a test</button>
+        <button id="push-off" type="button" class="link" hidden>Turn off</button>
+        <button id="push-install" type="button" class="secondary" hidden>Install the app</button>
+        <button id="push-later" type="button" class="link">Not now</button>
+      </div>
+      <p class="error" id="push-error" role="alert" hidden></p>
+    </aside>
+
     <!-- Setup progress, shown on every setup step -->
     <div id="setup-bar" class="setup-bar" hidden>
       <a href="#/setup" class="back">‹ Setup</a>

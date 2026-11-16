@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # Optional Telegram notifications when a job finishes (outbound only; see thinair/notify.py).
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
+    # Web Push notifications (no account needed; see thinair/push.py). False hides the feature and
+    # never generates the VAPID key.
+    web_push: bool = True
     # The address you open Thinair at (e.g. https://thinair.example.com), for links in messages.
     public_url: str | None = Field(default=None, pattern=r"^(https?://[^\s]+)?$")
 

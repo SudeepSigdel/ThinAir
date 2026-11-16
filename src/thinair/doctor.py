@@ -66,6 +66,7 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
     guard("https", lambda: _https(online))
     guard("github app", _github_app)
     guard("github", lambda: _github(online))
+    guard("push", _push)
     guard("notifications", _telegram)
     guard("runners", _runners)
     guard("version", lambda: _version(online))
@@ -469,6 +470,44 @@ def _github(online: bool) -> Check:
     if r.ok:
         return Check("ok", "GitHub token", "set and accepted by GitHub")
     return Check("warn", "GitHub token", f"set; GitHub answered HTTP {r.status_code}")
+
+
+def _push() -> Check:
+    """Web Push: on or off, the key file's mode, how many phones are subscribed. Local only."""
+    from thinair.secrets import secret_mode_problem
+
+    if not get_settings().web_push:
+        return Check("ok", "Push notifications", "off (THINAIR_WEB_PUSH=false)")
+    problem = secret_mode_problem("vapid.json")
+    if problem:
+        return Check(
+            "fail",
+            "Push notifications",
+            problem,
+            "Run: chmod 600 <data dir>/secrets/vapid.json",
+            id="push",
+        )
+    count = None
+    try:
+        if not _db_missing():
+            from sqlmodel import func, select
+
+            from thinair.db.models import PushSubscription
+            from thinair.db.session import session_scope
+
+            with session_scope() as s:
+                count = s.exec(select(func.count()).select_from(PushSubscription)).one()
+    except Exception:  # no tables yet
+        count = None
+    if not count:
+        return Check(
+            "ok",
+            "Push notifications",
+            "on; no phone has turned them on yet",
+            "Open the app on your phone and tap Turn on in the notifications banner.",
+            id="push",
+        )
+    return Check("ok", "Push notifications", f"on; {count} device{'s' if count != 1 else ''}")
 
 
 def _telegram() -> Check:

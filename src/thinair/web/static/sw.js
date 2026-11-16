@@ -42,3 +42,54 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request).then((hit) => hit || caches.match("/"))),
   );
 });
+
+// ---- Web Push ----------------------------------------------------------------------------------
+// The server sends {"web_push": 8030, "notification": {title, body, navigate, tag}}. iOS 18.4+ shows
+// that natively (Declarative Web Push); everywhere else this handler shows the same notification.
+// Only same-origin addresses are ever opened.
+function sameOriginUrl(target) {
+  try {
+    const u = new URL(target || "/", self.location.origin);
+    return u.origin === self.location.origin ? u.href : self.location.origin + "/";
+  } catch {
+    return self.location.origin + "/";
+  }
+}
+
+self.addEventListener("push", (event) => {
+  let data = null;
+  try {
+    data = event.data ? event.data.json() : null;
+  } catch {
+    data = null;
+  }
+  const n = data && data.notification;
+  if (!n || typeof n.title !== "string") return;
+  event.waitUntil(
+    self.registration.showNotification(n.title.slice(0, 120), {
+      body: typeof n.body === "string" ? n.body.slice(0, 240) : "",
+      tag: typeof n.tag === "string" ? n.tag.slice(0, 80) : undefined,
+      icon: "/static/icon-192.png",
+      badge: "/static/icon-192.png",
+      data: { navigate: sameOriginUrl(n.navigate) },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = sameOriginUrl(event.notification.data && event.notification.data.navigate);
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) {
+        if (w.url.startsWith(self.location.origin) && "focus" in w) {
+          return w.focus().then((c) => {
+            if (c && "navigate" in c) return c.navigate(target);
+            return undefined;
+          });
+        }
+      }
+      return self.clients.openWindow(target);
+    }),
+  );
+});
