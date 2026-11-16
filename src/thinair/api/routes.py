@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session, case, func, select
 
+from thinair import setup_state
 from thinair.agents.config import load_agents
 from thinair.api.auth import require_admin, require_auth
 from thinair.auth import create_token
@@ -207,7 +208,7 @@ def list_repos(who: Principal = Depends(require_auth)) -> list[RepoOut]:
 
 
 @router.post("/repos", response_model=RepoOut, status_code=201, tags=["repos"])
-def add_repo(body: RepoIn) -> Repo:
+def add_repo(body: RepoIn, who: Principal = Depends(require_auth)) -> Repo:
     """Register a GitHub repository (idempotent). Private ones need GitHub connected (the
     app, or THINAIR_GITHUB_TOKEN)."""
     source = GitSource(body.url.strip().rstrip("/"))
@@ -215,16 +216,20 @@ def add_repo(body: RepoIn) -> Repo:
         source.validate()
     except PrepareError as e:
         raise _err(422, e.code, e.message) from e
+    created = False
     with session_scope() as s:
         repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
         if repo is None:
             repo = Repo(url=source.url, name=source.url.split("/")[-1].removesuffix(".git"))
             s.add(repo)
+            created = True
         if body.private is not None and repo.private is None:
             repo.private = body.private
             s.add(repo)
         s.commit()
-        return repo
+    if created:
+        setup_state.mark("project_added", who.user_id)
+    return repo
 
 
 @router.get("/repos/{repo_id}", response_model=RepoOut, tags=["repos"])

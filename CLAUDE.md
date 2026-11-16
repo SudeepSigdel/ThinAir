@@ -469,6 +469,27 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (read `Location` with `ctx.request.get(maxRedirects: 0)`, else it leaves for the real github.com).
 - `cryptography` is a dependency (RS256); arm64 manylinux wheels exist (checked 2026-11-17).
 
+## First run, setup state, health (`setup_state.py`, `api/setup_api.py`, onboarding v2 phase 4)
+- `SetupEvent(user_key, name, at, value)` (migration 0011; owner's `user_key` is "owner" because a nullable user id
+  can't be unique). Funnel events are stamped ONCE by `setup_state.mark(name, user_id)` (never raises): `installed`
+  (startup), `paired` (`pairing.redeem`), `github_connected` (setup callback/sync), `agent_connected` (LoginHub done),
+  `project_added` (`add_repo`, new repos only), `first_job` (`JobService.submit`), `first_agent_success`/`first_pr`
+  (`_funnel` after a job ends). Choices are rows too: `skip:<step>`, `dismissed`, `preferred_agent` (value). They never
+  leave the server; `thinair stats` prints them.
+- `steps_for()` computes `done` from real state every time (github = app with an installation or a PAT; agent =
+  preferred agent's login in `LoginHub.known` OR a succeeded agent job; project = repos visible; first_task = any
+  agent/profile job by that user). Members' github step is "managed by this server's admin". `/api/setup` GET/POST
+  (skip, unskip, dismiss, preferred_agent -> single-flight background `ensure_agent_image(node)`), `/api/meta` (open,
+  60/min per address), `/api/health` (admin; `doctor.run_checks(online=False)` in a thread, problems first, `Check` now
+  has `id` and `action=(kind,target,label)`), `POST /api/health/fix/images` (202, single flight).
+- Short pairing codes: `create_pairing(session, user_id, ttl, short=True)` -> (long, `XXXX-XXXX`); Crockford base32,
+  `short_hash`, `failures` on the row; a wrong short code increments `failures` on ALL live short rows, 20 burns the short
+  form (long QR unaffected). `POST /api/pair` takes either; `thinair qr --short`; the installer uses it when supported.
+- UI: `#/setup` (Welcome + agent radios), `#/setup/github|agent|project|first-task` with a progress bar and Skip, "Finish
+  setting up" card + first-visit hop to Welcome (localStorage `thinair.setup.seen`), empty states, `#/settings/health`
+  (admin link at the bottom of Projects). `#/setup/project` shows an address field when GitHub isn't connected. Screens
+  render before their data arrives: browser tests must poll for text (a `textIs` helper), not read once.
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

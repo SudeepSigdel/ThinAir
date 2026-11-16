@@ -26,6 +26,10 @@ class Check:
     name: str
     detail: str
     fix: str = ""
+    id: str = ""
+    # A one-tap fix for the app's health screen: (kind, target, label) with kind "route"
+    # (a #/ address), "post" (an /api/ route) or "copy". `thinair doctor` itself ignores it.
+    action: tuple[str, str, str] | None = None
 
 
 def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
@@ -268,6 +272,8 @@ def _images(mgr) -> list[Check]:  # noqa: ANN001
             "Sandbox images",
             f"not prepared yet: {', '.join(missing)}",
             "The first job prepares them (a minute or two). To do it now: `thinair images`.",
+            id="images",
+            action=("post", "/api/health/fix/images", "Prepare now"),
         )
     ]
 
@@ -308,6 +314,8 @@ def _agents(mgr) -> list[Check]:  # noqa: ANN001
                 "For agent tasks: sign Claude Code or Codex in on the Agents screen of the app"
                 " (no terminal needed), or run `thinair auth claude --print-command`"
                 " (or codex, gemini).",
+                id="agents",
+                action=("route", "#/agents", "Sign in an agent"),
             )
         )
     return out
@@ -397,6 +405,8 @@ def _github_app() -> Check:
             "GitHub App",
             "not connected (a token in .env or public repositories still work)",
             "Connect GitHub in the app for short-lived, per-repository keys.",
+            id="github",
+            action=("route", "#/setup/github", "Connect GitHub"),
         )
     problem = secret_mode_problem(SECRET_NAME)
     if problem:

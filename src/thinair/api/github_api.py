@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from thinair import github_app as ga
+from thinair import setup_state
 from thinair.api.auth import (
     Principal,
     _client_key,
@@ -202,10 +203,12 @@ async def callback_setup(
         return _to_app_screen()  # just refreshed; the screen reads the table
     _last_sync[0] = now
     try:
-        await asyncio.to_thread(_sync)
+        rows = await asyncio.to_thread(_sync)
     except GitHubAPIError as e:
         log.warning("could not read the app's installations (status %s)", e.status)
         return _to_app_screen("sync_failed")
+    if rows:
+        setup_state.mark("github_connected")
     return _to_app_screen("connected")
 
 
@@ -221,9 +224,11 @@ def _sync() -> list[GitHubInstallation]:
 async def sync(who: Principal = Depends(require_admin)) -> dict:
     """Re-read the installations (the app calls this when the page becomes visible again)."""
     try:
-        await asyncio.to_thread(_sync)
+        rows = await asyncio.to_thread(_sync)
     except GitHubAPIError as e:
         raise _err(502, "github_unreachable", e.message) from None
+    if rows:
+        setup_state.mark("github_connected")
     return status_payload(who)
 
 

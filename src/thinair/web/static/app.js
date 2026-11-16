@@ -122,7 +122,7 @@ async function api(path, options = {}) {
 
 // ---- views ---------------------------------------------------------------------------------
 function hideAll() {
-  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin", "view-github", "view-pick"]) {
+  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin", "view-github", "view-pick", "view-setup", "view-setup-agent", "view-first", "view-health", "setup-bar"]) {
     show(id, false);
   }
   if (current.events) current.events.close();
@@ -145,7 +145,7 @@ function showLogin() {
 async function route() {
   const m = location.hash.match(/^#\/job\/([A-Za-z0-9]+)$/);
   const r = location.hash.match(/^#\/repo\/([A-Za-z0-9]+)$/);
-  const signin = location.hash.match(/^#\/agent\/([a-z][a-z0-9-]{0,30})\/login$/);
+  const signin = location.hash.match(/^#\/agent\/([a-z][a-z0-9-]{0,30})\/login(?:\?.*)?$/);
   try {
     const me = await api("/api/me");
     isAdmin = Boolean(me.is_admin);
@@ -173,6 +173,10 @@ async function route() {
   else if (location.hash === "#/agents") await showAgents();
   else if (location.hash.split("?")[0] === "#/setup/github") await showGithub();
   else if (location.hash === "#/setup/project") await showPick();
+  else if (location.hash === "#/setup") await showSetup();
+  else if (location.hash === "#/setup/agent") await showSetupAgent();
+  else if (location.hash === "#/setup/first-task") await showFirstTask();
+  else if (location.hash === "#/settings/health") await showHealth();
   else await showHome();
 }
 
@@ -181,6 +185,8 @@ async function showHome() {
   hideAll();
   show("view-home");
   offerPicker();
+  offerSetup();
+  show("health-link-box", isAdmin);
   await Promise.all([loadRepos(), loadJobs()]);
 }
 
@@ -1114,6 +1120,7 @@ function hashQuery() {
 async function showGithub() {
   hideAll();
   show("view-github");
+  showSetupBar("github");
   showError("github-error", "");
   github.shown = true;
   show("github-body", false);
@@ -1239,10 +1246,12 @@ let pick = { repos: [] };
 async function showPick() {
   hideAll();
   show("view-pick");
+  showSetupBar("project");
   showError("pick-error", "");
   show("pick-loading");
   show("pick-empty", false);
   show("pick-more", false);
+  show("pick-url-form", false);
   $("pick-list").replaceChildren();
   $("pick-search").value = "";
   try {
@@ -1253,7 +1262,7 @@ async function showPick() {
     show("pick-loading", false);
     if (e instanceof AuthError) return;
     if (e.detail && e.detail.code === "no_app") {
-      location.hash = "#/setup/github";
+      show("pick-url-form"); // GitHub isn't connected: public repositories still work by address
       return;
     }
     showError("pick-error", `Couldn't reach GitHub. ${e.message}`);
@@ -1285,9 +1294,35 @@ async function addFromPick(r, row) {
   row.disabled = true;
   try {
     const repo = await api("/api/repos", { method: "POST", body: JSON.stringify({ url: r.url, private: r.private }) });
-    location.hash = `#/repo/${repo.id}`;
+    await afterProjectAdded(repo);
   } catch (e) {
     row.disabled = false;
+    if (!(e instanceof AuthError)) showError("pick-error", e.message);
+  }
+}
+
+// In the guided setup the next step follows; otherwise open the project.
+async function afterProjectAdded(repo) {
+  try {
+    const st = await loadSetup();
+    if (!st.complete && !st.dismissed) {
+      await setupNext();
+      return;
+    }
+  } catch {
+    /* fall through to the project page */
+  }
+  location.hash = `#/repo/${repo.id}`;
+}
+
+async function addFromUrl(ev) {
+  ev.preventDefault();
+  showError("pick-error", "");
+  try {
+    const repo = await api("/api/repos", { method: "POST", body: JSON.stringify({ url: $("pick-url").value.trim() }) });
+    $("pick-url").value = "";
+    await afterProjectAdded(repo);
+  } catch (e) {
     if (!(e instanceof AuthError)) showError("pick-error", e.message);
   }
 }
@@ -1300,6 +1335,365 @@ async function offerPicker() {
     show("pick-github-box", st.mode === "app" && st.installations.length > 0 && st.allowed);
   } catch {
     /* the add-by-URL form is always there */
+  }
+}
+
+// ---- first-run setup: Welcome, steps, first task, health -------------------------------------
+const SETUP_PATHS = {
+  github: "#/setup/github",
+  agent: "#/setup/agent",
+  project: "#/setup/project",
+  first_task: "#/setup/first-task",
+};
+const STARTER_README =
+  'Add a short "Project structure" section to the README that explains what each top-level folder is for. Don\'t change any code.';
+const STARTER_TYPOS = "Fix typos in the documentation and comments. Don't change any code behaviour.";
+let setup = { state: null, step: null };
+
+async function loadSetup() {
+  setup.state = await api("/api/setup");
+  return setup.state;
+}
+
+function storeGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storeSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode: the redirect just happens again */
+  }
+}
+
+// The progress bar above every setup step. `stepId` is one of the four step ids.
+async function showSetupBar(stepId) {
+  setup.step = stepId;
+  try {
+    const st = await loadSetup();
+    const idx = st.steps.findIndex((x) => x.id === stepId);
+    if (idx < 0 || setup.step !== stepId) return;
+    $("setup-count").textContent = `${idx + 1} of ${st.total}`;
+    $("setup-progress").max = st.total;
+    $("setup-progress").value = idx + 1;
+    show("setup-bar");
+  } catch {
+    /* the step itself still works without the bar */
+  }
+}
+
+async function setupNext() {
+  const st = await loadSetup();
+  location.hash = st.next ? SETUP_PATHS[st.next] : "#/";
+}
+
+async function skipStep(ev) {
+  ev.preventDefault();
+  if (!setup.step) return;
+  try {
+    await api("/api/setup", { method: "POST", body: JSON.stringify({ skip: setup.step }) });
+    await setupNext();
+  } catch (e) {
+    if (!(e instanceof AuthError)) location.hash = "#/";
+  }
+}
+
+async function showSetup() {
+  hideAll();
+  show("view-setup");
+  storeSet("thinair.setup.seen", "1");
+  showError("setup-error", "");
+  let st;
+  try {
+    st = await loadSetup();
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("setup-error", e.message);
+    return;
+  }
+  const chosen = st.preferred_agent || "claude";
+  for (const r of document.querySelectorAll('input[name="agent-choice"]')) r.checked = r.value === chosen;
+  show("setup-other-note", chosen === "other");
+  $("setup-steps").replaceChildren(
+    ...st.steps.map((x, i) => {
+      const status = x.done ? "Done" : x.skipped ? "Skipped" : x.detail || "";
+      return el(
+        "li",
+        {},
+        el("a", { href: SETUP_PATHS[x.id], text: `${i + 1}  ${x.label}` }),
+        el("span", { class: `st${x.done ? " ok" : ""}`, text: status }),
+      );
+    }),
+  );
+  $("setup-continue").textContent = st.complete ? "Back to projects" : st.done_count ? "Continue" : "Start";
+}
+
+async function chooseAgent(value) {
+  show("setup-other-note", value === "other");
+  try {
+    await api("/api/setup", { method: "POST", body: JSON.stringify({ preferred_agent: value }) });
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("setup-error", e.message);
+  }
+}
+
+async function setupContinue() {
+  const picked = document.querySelector('input[name="agent-choice"]:checked');
+  try {
+    if (picked && (!setup.state || setup.state.preferred_agent !== picked.value)) await chooseAgent(picked.value);
+    await setupNext();
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("setup-error", e.message);
+  }
+}
+
+async function dismissSetup() {
+  try {
+    await api("/api/setup", { method: "POST", body: JSON.stringify({ dismiss: true }) });
+  } catch (e) {
+    if (e instanceof AuthError) return;
+  }
+  location.hash = "#/";
+}
+
+async function showSetupAgent() {
+  hideAll();
+  show("view-setup-agent");
+  showError("sa-error", "");
+  for (const id of ["sa-signin", "sa-continue", "sa-hint"]) show(id, false);
+  showSetupBar("agent");
+  let st, list;
+  try {
+    [st, list] = await Promise.all([loadSetup(), api("/api/agents")]);
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("sa-error", e.message);
+    return;
+  }
+  const pref = st.preferred_agent;
+  if (!pref) {
+    location.hash = "#/setup";
+    return;
+  }
+  if (pref === "other") {
+    $("sa-title").textContent = "Add an agent later";
+    $("sa-status").textContent = "Pick Claude Code or Codex on the previous screen to sign one in. You can add more agents later from the Agents screen.";
+    show("sa-continue");
+    return;
+  }
+  const a = list.find((x) => x.id === pref);
+  if (!a) {
+    location.hash = "#/setup";
+    return;
+  }
+  $("sa-title").textContent = `Sign in to ${a.name}`;
+  const step = st.steps.find((x) => x.id === "agent");
+  if (step.done) {
+    $("sa-status").textContent = `${a.name} is signed in.`;
+    show("sa-continue");
+  } else if (a.login.in_app) {
+    $("sa-status").textContent = `${a.name} isn't signed in yet. It takes about a minute.`;
+    $("sa-signin").href = `#/agent/${a.id}/login?from=setup`;
+    show("sa-signin");
+  } else {
+    $("sa-status").textContent = `${a.name} can't sign in from the app yet.`;
+    $("sa-hint").textContent = a.login_hint;
+    show("sa-hint");
+    show("sa-continue");
+  }
+}
+
+async function showFirstTask() {
+  hideAll();
+  show("view-first");
+  showError("first-error", "");
+  showSetupBar("first_task");
+  let st, repos, agentList;
+  try {
+    [st, repos, agentList] = await Promise.all([loadSetup(), api("/api/repos"), api("/api/agents")]);
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("first-error", e.message);
+    return;
+  }
+  if (repos.length === 0) {
+    location.hash = "#/setup/project";
+    return;
+  }
+  const repo = repos[0]; // most recently used first
+  const pref = st.preferred_agent && st.preferred_agent !== "other" ? agentList.find((x) => x.id === st.preferred_agent) : null;
+  const signedIn = st.steps.find((x) => x.id === "agent").done;
+  $("first-on").textContent = `on ${repo.name}`;
+  if (!$("first-task").value) $("first-task").value = STARTER_README;
+  firstTask.repo = repo;
+  firstTask.agent = pref;
+  firstTask.needsSignin = Boolean(pref && !signedIn);
+  show("first-form", Boolean(pref));
+  show("first-alt", !pref);
+  $("first-start").textContent = !pref ? "Start" : firstTask.needsSignin ? `Sign in to ${pref.name} first` : `Start with ${pref.name}`;
+  $("first-task").required = !firstTask.needsSignin;
+}
+const firstTask = { repo: null, agent: null, needsSignin: false };
+
+async function startFirstTask(ev) {
+  ev.preventDefault();
+  showError("first-error", "");
+  if (firstTask.needsSignin) {
+    location.hash = `#/agent/${firstTask.agent.id}/login?from=setup`;
+    return;
+  }
+  const button = $("first-start");
+  button.disabled = true;
+  try {
+    const job = await api("/api/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        repo_id: firstTask.repo.id,
+        kind: "agent",
+        agent_id: firstTask.agent.id,
+        task: $("first-task").value.trim(),
+      }),
+    });
+    location.hash = `#/job/${job.id}`;
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("first-error", e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function startFirstProfile() {
+  try {
+    const job = await api("/api/jobs", { method: "POST", body: JSON.stringify({ repo_id: firstTask.repo.id, kind: "profile" }) });
+    location.hash = `#/job/${job.id}`;
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("first-error", e.message);
+  }
+}
+
+// Home: "Finish setting up", and the first-visit hop to the Welcome screen.
+async function offerSetup() {
+  show("setup-card", false);
+  let st;
+  try {
+    st = await loadSetup();
+  } catch {
+    return;
+  }
+  if (st.complete || st.dismissed) return;
+  if (st.done_count === 0 && !st.preferred_agent && !storeGet("thinair.setup.seen")) {
+    location.hash = "#/setup";
+    return;
+  }
+  const next = st.steps.find((x) => x.id === st.next);
+  $("setup-card-count").textContent = `${st.done_count} of ${st.total}`;
+  $("setup-card-next").textContent = next ? `Next: ${next.label.charAt(0).toLowerCase()}${next.label.slice(1)}` : "";
+  $("setup-card-go").href = SETUP_PATHS[st.next] || "#/setup";
+  show("setup-card");
+}
+
+async function dismissCard() {
+  show("setup-card", false);
+  try {
+    await api("/api/setup", { method: "POST", body: JSON.stringify({ dismiss: true }) });
+  } catch {
+    /* it comes back next time */
+  }
+}
+
+// ---- setup health -----------------------------------------------------------------------------
+function fmtSince(seconds) {
+  if (seconds < 90) return `${seconds} s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+async function showHealth() {
+  hideAll();
+  show("view-health");
+  showError("health-error", "");
+  $("health-summary").textContent = "Checking…";
+  $("health-list").replaceChildren();
+  $("health-first").textContent = "";
+  let data;
+  try {
+    data = await api("/api/health");
+  } catch (e) {
+    if (e instanceof AuthError) return;
+    $("health-summary").textContent = "";
+    showError("health-error", e.status === 403 ? "Only an admin can see this screen." : e.message);
+    return;
+  }
+  const n = data.problems;
+  const fails = data.checks.filter((c) => c.status === "fail").length;
+  $("health-summary").textContent =
+    n === 0 ? "Everything is working." : fails ? `${fails} problem${fails === 1 ? "" : "s"} to fix.` : `Working, with ${n} suggestion${n === 1 ? "" : "s"}.`;
+  $("health-list").replaceChildren(
+    ...data.checks.map((c) => {
+      const row = el(
+        "li",
+        { class: "health-row" },
+        el("span", { class: "name" }, el("span", {}, el("span", { class: `dot ${c.status}` }), c.name), el("span", { class: "word", text: c.status === "fail" ? "problem" : c.status === "warn" ? "suggestion" : "ok" })),
+      );
+      if (c.detail) row.append(el("small", { class: "muted wrap", text: c.detail }));
+      if (c.status !== "ok" && c.fix) row.append(el("small", { class: "muted wrap", text: c.fix }));
+      if (c.action) {
+        const b = el("button", { type: "button", text: c.action.label });
+        b.addEventListener("click", () => runHealthAction(c.action, b));
+        row.append(b);
+      }
+      return row;
+    }),
+  );
+  const t0 = data.first_run.length ? Date.parse(data.first_run[0].at) : null;
+  const parts = data.first_run
+    .slice(1)
+    .map((e) => `${e.name.replaceAll("_", " ")} after ${fmtSince(Math.max(0, Math.round((Date.parse(e.at) - t0) / 1000)))}`);
+  $("health-first").textContent = parts.length ? `First run: ${parts.join(" · ")}` : "";
+}
+
+async function runHealthAction(action, button) {
+  if (action.kind === "route") {
+    location.hash = action.target;
+  } else if (action.kind === "post") {
+    button.disabled = true;
+    button.textContent = "Started…";
+    try {
+      await api(action.target, { method: "POST" });
+      setTimeout(showHealth, 4000);
+    } catch (e) {
+      if (!(e instanceof AuthError)) showError("health-error", e.message);
+      button.disabled = false;
+      button.textContent = action.label;
+    }
+  } else if (action.kind === "copy") {
+    try {
+      await navigator.clipboard.writeText(action.target);
+      button.textContent = "Copied";
+    } catch {
+      /* clipboard blocked */
+    }
+  }
+}
+
+// Sign in with the short code from `thinair qr` (no camera).
+async function pairWithCode(ev) {
+  ev.preventDefault();
+  showError("pair-error", "");
+  const res = await fetch("/api/pair", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: $("pair-code").value.trim() }),
+  });
+  if (res.ok) {
+    $("pair-code").value = "";
+    await route();
+  } else if (res.status === 429) {
+    showError("pair-error", "Too many attempts. Wait a minute and try again.");
+  } else {
+    showError("pair-error", "This code has expired or was already used. Run `thinair qr` on the server for a new one.");
   }
 }
 
@@ -1320,6 +1714,23 @@ document.addEventListener("DOMContentLoaded", () => {
   $("cancel").addEventListener("click", cancelJob);
   $("retry").addEventListener("click", retryJob);
   $("logout").addEventListener("click", logout);
+  $("pair-form").addEventListener("submit", pairWithCode);
+  $("pick-url-form").addEventListener("submit", addFromUrl);
+  $("setup-skip").addEventListener("click", skipStep);
+  $("setup-continue").addEventListener("click", setupContinue);
+  $("setup-dismiss").addEventListener("click", dismissSetup);
+  $("setup-card-dismiss").addEventListener("click", dismissCard);
+  $("sa-continue").addEventListener("click", setupNext);
+  $("first-form").addEventListener("submit", startFirstTask);
+  $("first-typos").addEventListener("click", () => ($("first-task").value = STARTER_TYPOS));
+  $("first-own").addEventListener("click", () => {
+    $("first-task").value = "";
+    $("first-task").focus();
+  });
+  $("first-profile").addEventListener("click", startFirstProfile);
+  for (const r of document.querySelectorAll('input[name="agent-choice"]')) {
+    r.addEventListener("change", () => chooseAgent(r.value));
+  }
   $("github-connect").addEventListener("click", connectGithub);
   $("github-disconnect").addEventListener("click", disconnectGithub);
   $("pick-search").addEventListener("input", renderPick);
@@ -1327,7 +1738,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("signin-copy").addEventListener("click", copyUserCode);
   $("signin-cancel").addEventListener("click", () => cancelSignin());
   $("signin-again").addEventListener("click", startSignin);
-  $("signin-continue").addEventListener("click", () => (location.hash = "#/agents"));
+  $("signin-continue").addEventListener("click", () => {
+    location.hash = location.hash.includes("from=setup") ? "#/setup/agent" : "#/agents";
+  });
   $("signin-takeover").addEventListener("click", async () => {
     await cancelSignin(signin.takeover);
     await startSignin();

@@ -395,6 +395,9 @@ class LoginHub:
                 else:
                     m.finish("done")
                     self.known[s.volume] = True
+                    from thinair.setup_state import OWNER_KEY, mark
+
+                    mark("agent_connected", None if s.owner == OWNER_KEY else s.owner)
         except asyncio.CancelledError:
             m.finish("cancelled", "Sign-in cancelled.")
             raise

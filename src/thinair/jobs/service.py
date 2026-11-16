@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlmodel import select
 
+from thinair import setup_state
 from thinair.db.models import EventType, Job, JobKind, JobStatus, Repo, utcnow
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES, EventStore
@@ -178,6 +179,7 @@ class JobService:
             )
             s.add(job)
             s.commit()
+        setup_state.mark("first_job", user_id)
         return self._enqueue(job)
 
     def submit_pr(self, agent_job_id: str) -> Job:
@@ -346,7 +348,23 @@ class JobService:
             self._contexts.pop(job_id, None)
             self._user_cancelled.discard(job_id)
             if not self._stopping and not requeued:
+                self._funnel(job_id)
                 self._announce(job_id)
+
+    def _funnel(self, job_id: str) -> None:
+        """First successful agent task / first PR, for `thinair stats`. Best effort."""
+        try:
+            with session_scope() as s:
+                job = s.get(Job, job_id)
+                if job is None or job.status != JobStatus.SUCCEEDED:
+                    return
+                kind, user_id = job.kind, job.user_id
+            if kind == JobKind.AGENT:
+                setup_state.mark("first_agent_success", user_id)
+            elif kind == JobKind.PR:
+                setup_state.mark("first_pr", user_id)
+        except Exception:  # noqa: BLE001 - bookkeeping must never touch the job
+            log.debug("funnel bookkeeping failed", exc_info=True)
 
     def _requeue_locally(self, job_id: str) -> bool:
         with session_scope() as s:

@@ -73,6 +73,11 @@ class PairingCode(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime
     used_at: datetime | None = None
+    # The same code in the short form `XXXX-XXXX` (SHA-256 of its normalised spelling), for
+    # typing when the phone has no camera. `failures` counts wrong short codes seen while this
+    # row was live (all addresses together): at 20 the short code is burned.
+    short_hash: str | None = Field(default=None, index=True)
+    failures: int = 0
 
 
 class GitHubInstallation(SQLModel, table=True):
@@ -98,6 +103,17 @@ class OneTimeState(SQLModel, table=True):
     user_id: str | None = Field(default=None, foreign_key="user.id")
     expires_at: datetime
     used_at: datetime | None = None
+
+
+class SetupEvent(SQLModel, table=True):
+    """First-run progress, local only: funnel timestamps (`paired`, `first_job`, ...), skipped
+    steps (`skip:<step>`), `dismissed`, and `preferred_agent` (in `value`). One row per
+    (user, name); the owner's `user_key` is "owner". Nothing here ever leaves the server."""
+
+    user_key: str = Field(primary_key=True)
+    name: str = Field(primary_key=True)
+    at: datetime = Field(default_factory=utcnow)
+    value: str | None = None
 
 
 class Runner(SQLModel, table=True):
