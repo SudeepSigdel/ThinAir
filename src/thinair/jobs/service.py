@@ -183,12 +183,12 @@ class JobService:
     def submit_pr(self, agent_job_id: str) -> Job:
         """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
         from thinair.db.models import JobResult
-        from thinair.jobs.pr import PRError, check_pr_possible, require_token
+        from thinair.jobs.pr import PRError, check_pr_possible, require_credentials
         from thinair.users import github_token_allowed, job_user, too_many_jobs
 
         if JobKind.PR not in self._executors:
             raise PRError("unsupported_job", "Opening pull requests is not available.")
-        require_token()  # fail fast on the phone instead of in the job log
+        require_credentials()  # fail fast on the phone instead of in the job log
         with session_scope() as s:
             parent = s.get(Job, agent_job_id)
             result = s.get(JobResult, agent_job_id)

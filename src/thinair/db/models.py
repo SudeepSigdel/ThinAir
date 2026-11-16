@@ -75,6 +75,31 @@ class PairingCode(SQLModel, table=True):
     used_at: datetime | None = None
 
 
+class GitHubInstallation(SQLModel, table=True):
+    """An installation of this server's GitHub App on an account. Not secret: the app id, slug
+    and private key live in `secrets/github-app.json`, never here. `user_id` None = the server's
+    (the only kind until members connect their own)."""
+
+    installation_id: int = Field(primary_key=True)
+    account_login: str
+    account_type: str  # "User" | "Organization"
+    repository_selection: str  # "all" | "selected"
+    user_id: str | None = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=utcnow)
+    removed_at: datetime | None = None
+
+
+class OneTimeState(SQLModel, table=True):
+    """A single-use `state` value for the GitHub redirects (only its SHA-256 is stored). The
+    open callback routes act only when they get a live one."""
+
+    hash: str = Field(primary_key=True)
+    purpose: str
+    user_id: str | None = Field(default=None, foreign_key="user.id")
+    expires_at: datetime
+    used_at: datetime | None = None
+
+
 class Runner(SQLModel, table=True):
     """Another machine that runs profile jobs for this server. It connects *to* the server with
     its own secret (only the SHA-256 is stored, like API tokens)."""
@@ -97,6 +122,8 @@ class Repo(SQLModel, table=True):
     # Project defaults, used when a new job leaves them out (set by admins on the project page).
     default_agent_id: str | None = None
     default_ref: str | None = None
+    # Filled when the repository was picked from GitHub (the picker knows); None = unknown.
+    private: bool | None = None
 
 
 class Job(SQLModel, table=True):

@@ -24,6 +24,12 @@ agents) inside Docker containers.
 - Test runs have no network. Install and agent runs do (they need package registries and the
   model provider).
 - Thinair reaches Docker through docker-socket-proxy, limited to the API sections it uses.
+- Connect GitHub (a per-server GitHub App) mints keys for one repository that last at most an hour
+  and are revoked when the step ends: a read-only key for the clone container, a write key for the
+  push container, and a pull-request key that never leaves Thinair's process. The app's private key
+  is a 0600 file in the data volume (never the database or environment), no sandbox can mount that
+  volume, and `thinair doctor` flags a readable key. The two GitHub redirect routes are open but act
+  only on a one-time state or re-read what GitHub says, and are throttled. See docs/github.md.
 - The optional GitHub token (`THINAIR_GITHUB_TOKEN`) is passed only to the clone container (and,
   for pull requests, to a push container that runs no repo code, plus Thinair's own REST calls),
   through git's environment config scoped to `https://github.com/`. It is never in argv,
@@ -84,6 +90,9 @@ agents) inside Docker containers.
   inside their sandbox. Code they work on could trick them into reading and sending out the login
   mounted in that sandbox. Only run agent tasks on repositories you trust, and rotate the login
   (`docker volume rm thinair-auth-<agent>`, then log in again) if in doubt.
+- **The GitHub App's private key is on disk** in the data volume, so backups of that volume contain
+  it. If it is stolen, the thief can mint tokens for every repository the app is installed on until
+  you delete the app on GitHub (the same reach as a read/write token for those repositories).
 - **The GitHub token is visible to the host's Docker users** while a clone runs (`docker inspect`
   shows container environment). That is the same group that can already control Thinair. Use a
   fine-grained, read-only token limited to the repos you need.

@@ -117,7 +117,9 @@ def auth_volume_name(agent_id: str, user: User | None) -> str:
 
 
 def github_token_allowed(user: User | None) -> bool:
-    return user is None or user.is_admin or get_settings().github_token_for_members
+    """May this user's jobs use the server's GitHub connection (the app or the token)?"""
+    s = get_settings()
+    return user is None or user.is_admin or s.github_token_for_members or s.github_for_members
 
 
 # ---- how many unfinished jobs a member may have -------------------------------------------------

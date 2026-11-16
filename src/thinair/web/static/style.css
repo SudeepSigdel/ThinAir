@@ -198,3 +198,16 @@ a.button {
 #signin-status.ok { color: var(--ok); font-weight: 600; }
 #view-signin .actions { flex-wrap: wrap; }
 #view-signin .actions button { flex: 1 1 auto; }
+
+/* ---- Connect GitHub and the repository picker ---- */
+.points { margin: 0.6rem 0 1rem; padding-left: 1.2rem; }
+#github-state { font-weight: 600; }
+#github-state.ok::before { content: ""; display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--ok); margin-right: 0.5rem; }
+#github-state.warn { color: var(--warn); }
+#github-body .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 1rem; }
+#github-body .actions button, #github-body .actions a.button { margin: 0; width: auto; }
+#github-org { margin: 0.8rem 0; }
+.pick-row { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: none; border: 0; padding: 12px 2px; color: inherit; font: inherit; cursor: pointer; }
+.pick-row .name { font-weight: 600; overflow-wrap: anywhere; }
+.pick-row .tag { font-size: 0.8rem; color: var(--muted); border: 1px solid var(--border, currentColor); border-radius: 999px; padding: 0 0.5rem; margin-left: 0.5rem; }
+.pick-row[disabled] { opacity: 0.6; cursor: default; }

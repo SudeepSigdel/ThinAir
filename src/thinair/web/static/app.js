@@ -122,19 +122,21 @@ async function api(path, options = {}) {
 
 // ---- views ---------------------------------------------------------------------------------
 function hideAll() {
-  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin"]) {
+  for (const id of ["loading", "view-login", "view-home", "view-repo", "view-job", "view-agents", "view-signin", "view-github", "view-pick"]) {
     show(id, false);
   }
   if (current.events) current.events.close();
   current.events = null;
   clearTimeout(current.listTimer);
   current.jobId = null;
+  github.shown = false;
 }
 
 function showLogin() {
   hideAll();
   show("logout", false);
   show("nav-agents", false);
+  show("nav-github", false);
   show("who", false);
   show("view-login");
   $("token").focus();
@@ -164,10 +166,13 @@ async function route() {
   }
   show("logout");
   show("nav-agents");
+  show("nav-github");
   if (m) await showJob(m[1]);
   else if (r) await showRepo(r[1]);
   else if (signin) await showSignin(signin[1]);
   else if (location.hash === "#/agents") await showAgents();
+  else if (location.hash.split("?")[0] === "#/setup/github") await showGithub();
+  else if (location.hash === "#/setup/project") await showPick();
   else await showHome();
 }
 
@@ -175,6 +180,7 @@ async function route() {
 async function showHome() {
   hideAll();
   show("view-home");
+  offerPicker();
   await Promise.all([loadRepos(), loadJobs()]);
 }
 
@@ -1091,6 +1097,212 @@ async function copyUserCode() {
   }
 }
 
+// ---- Connect GitHub (the app) and the repository picker --------------------------------------
+const GITHUB_RESULTS = {
+  failed: "GitHub didn't finish. Nothing was changed. Try again.",
+  bad_state: "That sign-in link has expired or was already used. Tap Connect GitHub again.",
+  no_app: "Thinair has no GitHub App yet. Tap Connect GitHub.",
+  sync_failed: "Couldn't read what GitHub installed. Wait a moment and reload.",
+};
+let github = { status: null, shown: false };
+
+function hashQuery() {
+  const q = location.hash.split("?")[1] || "";
+  return new URLSearchParams(q);
+}
+
+async function showGithub() {
+  hideAll();
+  show("view-github");
+  showError("github-error", "");
+  github.shown = true;
+  show("github-body", false);
+  show("github-loading");
+  try {
+    // Coming back from GitHub, the server has already re-read the installations.
+    github.status = await api("/api/github");
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("github-error", e.message);
+    show("github-loading", false);
+    return;
+  }
+  renderGithub(github.status);
+}
+
+function renderGithub(st) {
+  show("github-loading", false);
+  show("github-body");
+  const result = hashQuery().get("result");
+  const apps = st.app;
+  const installs = st.installations || [];
+  const connected = st.mode === "app" && installs.length > 0;
+  const state = $("github-state");
+  state.className = "";
+  for (const id of ["github-connect", "github-choose", "github-pick", "github-manage", "github-disconnect",
+    "github-installs", "github-next", "github-org", "github-delete", "github-points"]) {
+    show(id, false);
+  }
+  $("github-intro").textContent =
+    "Thinair creates its own private GitHub App on your account. You choose which repositories it can see.";
+  if (!st.can_manage) {
+    $("github-intro").textContent = "";
+    state.textContent = connected
+      ? "GitHub is connected by an admin."
+      : "GitHub isn't connected yet. Ask an admin to connect it.";
+    state.className = connected ? "ok" : "";
+    return;
+  }
+  if (connected) {
+    state.textContent = `Connected as ${installs.map((i) => i.account).join(", ")}`;
+    state.className = "ok";
+    $("github-installs").replaceChildren(
+      ...installs.map((i) =>
+        el("li", {}, el("strong", { text: i.account }), el("small", { class: "muted", text: ` · ${i.selection === "all" ? "all repositories" : "selected repositories"}` })),
+      ),
+    );
+    show("github-installs");
+    show("github-pick");
+    $("github-manage").href = installs[0].manage_url;
+    show("github-manage");
+    show("github-disconnect");
+    $("github-intro").textContent = "";
+  } else if (st.mode === "app" && apps && apps.slug) {
+    state.textContent = "Almost there. Thinair's app exists but isn't installed on any repository yet.";
+    state.className = "warn";
+    $("github-choose").href = `https://github.com/apps/${encodeURIComponent(apps.slug)}/installations/new`;
+    show("github-choose");
+    show("github-disconnect");
+    $("github-intro").textContent = "";
+  } else if (st.mode === "app") {
+    state.textContent = st.problem || "Thinair's GitHub App can't be read.";
+    state.className = "warn";
+    show("github-disconnect");
+  } else {
+    show("github-points");
+    show("github-next");
+    show("github-org");
+    show("github-connect");
+    state.textContent = st.mode === "token"
+      ? "You're using a token from .env. That works. Connect the app for short-lived keys."
+      : "";
+    if (!st.public_url_set) {
+      state.textContent = "Set THINAIR_PUBLIC_URL first: GitHub sends your phone back to that address.";
+      state.className = "warn";
+      $("github-connect").disabled = true;
+    } else {
+      $("github-connect").disabled = false;
+    }
+  }
+  if (result && GITHUB_RESULTS[result]) showError("github-error", GITHUB_RESULTS[result]);
+  else showError("github-error", "");
+}
+
+async function connectGithub() {
+  const button = $("github-connect");
+  button.disabled = true;
+  showError("github-error", "");
+  try {
+    const org = $("github-org-name").value.trim();
+    const start = await api("/api/github/app", { method: "POST", body: JSON.stringify({ org: org || null }) });
+    // A real form POST to github.com (a top-level navigation; the page's CSP allows exactly this).
+    const form = el("form", { method: "post", action: start.action, hidden: true });
+    form.append(el("input", { type: "hidden", name: "manifest", value: start.manifest }));
+    document.body.append(form);
+    form.submit();
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("github-error", e.message);
+    button.disabled = false;
+  }
+}
+
+async function disconnectGithub() {
+  if (!confirm("Thinair will lose access to your repositories. Open pull requests stay.")) return;
+  try {
+    const out = await api("/api/github/app", { method: "DELETE" });
+    github.status = await api("/api/github");
+    renderGithub(github.status);
+    if (out.delete_url) {
+      const note = $("github-delete");
+      note.replaceChildren(
+        "To remove the app from your GitHub account too: ",
+        el("a", { href: out.delete_url, target: "_blank", rel: "noopener noreferrer", text: "open its settings ↗" }),
+      );
+      show("github-delete");
+    }
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("github-error", e.message);
+  }
+}
+
+let pick = { repos: [] };
+
+async function showPick() {
+  hideAll();
+  show("view-pick");
+  showError("pick-error", "");
+  show("pick-loading");
+  show("pick-empty", false);
+  show("pick-more", false);
+  $("pick-list").replaceChildren();
+  $("pick-search").value = "";
+  try {
+    const data = await api("/api/github/repos");
+    pick.repos = data.repos;
+    $("pick-manage").href = data.manage_url;
+  } catch (e) {
+    show("pick-loading", false);
+    if (e instanceof AuthError) return;
+    if (e.detail && e.detail.code === "no_app") {
+      location.hash = "#/setup/github";
+      return;
+    }
+    showError("pick-error", `Couldn't reach GitHub. ${e.message}`);
+    return;
+  }
+  show("pick-loading", false);
+  show("pick-more");
+  renderPick();
+}
+
+function renderPick() {
+  const q = $("pick-search").value.trim().toLowerCase();
+  const rows = pick.repos.filter((r) => !q || r.full_name.toLowerCase().includes(q));
+  show("pick-empty", pick.repos.length === 0);
+  $("pick-list").replaceChildren(
+    ...rows.map((r) => {
+      const bits = [r.language, r.pushed_at ? `pushed ${ago(r.pushed_at)}` : null].filter(Boolean);
+      const name = el("span", { class: "name", text: r.full_name });
+      if (r.private) name.append(el("span", { class: "tag", text: "Private" }));
+      if (r.added) name.append(el("span", { class: "tag", text: "Added" }));
+      const row = el("button", { type: "button", class: "pick-row" }, name, el("small", { class: "muted", text: bits.join(" · ") }));
+      row.addEventListener("click", () => addFromPick(r, row));
+      return el("li", {}, row);
+    }),
+  );
+}
+
+async function addFromPick(r, row) {
+  row.disabled = true;
+  try {
+    const repo = await api("/api/repos", { method: "POST", body: JSON.stringify({ url: r.url, private: r.private }) });
+    location.hash = `#/repo/${repo.id}`;
+  } catch (e) {
+    row.disabled = false;
+    if (!(e instanceof AuthError)) showError("pick-error", e.message);
+  }
+}
+
+// Home: offer the picker only when the app is connected and can see something.
+async function offerPicker() {
+  show("pick-github-box", false);
+  try {
+    const st = await api("/api/github");
+    show("pick-github-box", st.mode === "app" && st.installations.length > 0 && st.allowed);
+  } catch {
+    /* the add-by-URL form is always there */
+  }
+}
+
 // ---- start ---------------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   $("login-form").addEventListener("submit", login);
@@ -1108,6 +1320,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("cancel").addEventListener("click", cancelJob);
   $("retry").addEventListener("click", retryJob);
   $("logout").addEventListener("click", logout);
+  $("github-connect").addEventListener("click", connectGithub);
+  $("github-disconnect").addEventListener("click", disconnectGithub);
+  $("pick-search").addEventListener("input", renderPick);
   $("signin-form").addEventListener("submit", submitCode);
   $("signin-copy").addEventListener("click", copyUserCode);
   $("signin-cancel").addEventListener("click", () => cancelSignin());
@@ -1125,6 +1340,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (document.hidden) return;
     if (!$("view-home").hidden) Promise.all([loadRepos(), loadJobs()]);
     else if (!$("view-repo").hidden) loadRepoJobs();
+    else if (github.shown && github.status && github.status.can_manage && github.status.mode === "app") {
+      // Back from GitHub's install page: ask for what changed (no webhooks, so we ask).
+      api("/api/github/sync", { method: "POST" })
+        .then((st) => {
+          github.status = st;
+          renderGithub(st);
+        })
+        .catch(() => {});
+    }
   });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   pairFromLink().then((paired) => {

@@ -1587,3 +1587,46 @@ Follow-ups:
 - Owner's manual test: complete a real Claude Code and Codex sign-in from the phone, then run a
   task (below). Not possible in automation (never a real account).
 - Phase 4: setup step 2 reuses `#/agent/<id>/login`; mark the job-failure state in `known`.
+
+### Phase 3: Connect GitHub (2026-11-17, branch `onboarding-v2/phase-3-github`)
+
+Shipped:
+- `secrets.py`, `onetime.py`, `github_app.py` (manifest, conversion, RS256 JWT, installation sync, token
+  mint/revoke, repo listing, disconnect), `GitHubAccess`/`Credential`/`commit_identity` in `github.py`,
+  `api/github_api.py` (status, start, two open callbacks, sync, picker list, disconnect), migration 0010
+  (`GitHubInstallation`, `OneTimeState`, `Repo.private`), `cryptography` dependency.
+- Rewiring: `prepare._load_source` (clone key, revoked in `finally`, app-specific hints), `jobs/pr.py` (separate
+  push and PR keys, workflows-refusal message, `require_credentials()`), `submit_pr`, `RepoIn/RepoOut.private`.
+- UI: header link GitHub (`#/setup/github`, O2), picker (`#/setup/project`, O4), home shortcut. CSP
+  `form-action` + `https://github.com`. Doctor `GitHub App` check, `thinair github status|disconnect`,
+  `THINAIR_GITHUB_FOR_MEMBERS`, `docs/github.md`, README/SECURITY/.env.example rewritten around Connect.
+- Defence in depth: `VolumeMount` refuses the server's data volume.
+
+[verify in build] results:
+- `cryptography` has arm64 manylinux wheels for CPython 3.12 (`pip download --platform manylinux2014_aarch64`:
+  cryptography 50.0.2 abi3) and installs on x86; no compiler needed in the server image.
+- GitHub's setup-URL docs name only `installation_id` (and warn it can be spoofed); they do not say whether
+  `state` is echoed back. The design doesn't depend on it (live state skips the cooldown; otherwise the route
+  re-reads installations, rate limited).
+- Create-a-PR needs Pull requests: write; GET repo needs Metadata: read (GitHub's permissions table). The PR key asks
+  for both. Not tested against a real GitHub (needs the owner's account).
+- Existing tests unchanged: one required `pr_executor` to fail on missing credentials before touching the database,
+  so `require_credentials()` runs first.
+
+Deviations / decisions (choose-the-best-option, please review):
+- `prepare_workspace` keeps its `github_auth` parameter (bool or `GitHubAccess`) instead of a new `github` one:
+  `test_users.py` asserts the executors pass a bool, and installations are server-level until phase 7 so a bool
+  carries all the information. True now means "may use the server's GitHub connection (app > PAT)".
+- Early PR check (`submit_pr`) is "any credential configured", not "this repo is covered": coverage needs a GitHub call,
+  so it is reported in the job instead.
+- App errors (GitHub down, repo not covered) fall back to PAT/anonymous rather than failing, so public clones keep
+  working during an outage; the clone-failure hint carries the reason.
+- The setup callback is open and has no reliable state, so it is per-IP rate limited (20/min) and cooled down (5 s)
+  rather than state-gated.
+- No Settings screen exists yet (phase 6) and phase 1 added no Welcome/checklist, so Connect GitHub and the picker
+  are reached from a header link and the home screen, at the plan's `#/setup/*` routes.
+- `GET /api/github/repos` is available to anyone allowed to use the server's connection (admins, or members with the
+  setting); manage actions are admin-only.
+
+Follow-ups: owner's real-GitHub round trip (below); phase 4 wires O2/O4 into the guided flow; phase 7 members'
+own installations.

@@ -16,11 +16,12 @@ from starlette.responses import Response
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 NO_CACHE = {"Cache-Control": "no-cache"}
 
-# No inline scripts or styles and no third-party origins: injected markup cannot run code.
+# No inline scripts or styles and no third-party origins: injected markup cannot run code. The
+# only exception is `form-action`: "Connect GitHub" posts the app manifest to github.com.
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
     "connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; "
-    "base-uri 'none'; form-action 'self'"
+    "base-uri 'none'; form-action 'self' https://github.com"
 )
 # FastAPI's interactive docs load their assets from a CDN, so they get no CSP.
 _DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")

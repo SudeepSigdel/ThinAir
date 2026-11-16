@@ -24,7 +24,7 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
-Private GitHub repositories and opening pull requests work with a GitHub token (see below).
+Private GitHub repositories and opening pull requests work after two taps on **Connect GitHub** (see below).
 Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
 Gemini CLI. Several people can share one server, each with their own jobs and agent logins.
 
@@ -218,7 +218,18 @@ Adding another agent takes one YAML file, no code changes. See [docs/agents.md](
 
 ## Private repositories
 
-Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
+**Connect GitHub** (header link in the app, once, as an admin): Thinair creates its own private
+GitHub App on your account, you choose which repositories it may see, and you are done. No token to
+copy, no `.env`, no restart. Adding a project then becomes tapping a row in your repository list.
+Each job gets a key for **one repository**, valid at most an hour and revoked when the step ends;
+pull requests are authored by the app's bot, so you can approve and merge them under branch
+protection, and your CI runs. Details, security notes and troubleshooting: [docs/github.md](docs/github.md).
+Needs `THINAIR_PUBLIC_URL` (the installer sets it). The app's private key is stored on the server
+in `secrets/github-app.json` (mode 0600), never in the database or environment.
+
+### Advanced: a token in `.env`
+
+Still supported, and used for repositories the app can't see. Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
 choose **Only select repositories**, pick the repos, and give it **Contents: Read-only** (nothing
 else; add write access only if you want pull requests, see below). Put it in `.env`, then restart (`docker compose up -d`):
 
@@ -245,8 +256,8 @@ When an agent task succeeds with changes, its page offers **Create pull request*
 3. pushes the branch `thinair/<job-id>` (only Thinair writes to these branches), and
 4. opens the pull request against the branch you ran the task on (or the default branch).
 
-This needs the token to have **Contents: Read and write** and **Pull requests: Read and write**
-on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
+With the app, nothing to set up. With a token it needs **Contents: Read and write** and
+**Pull requests: Read and write** on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
 `THINAIR_GIT_AUTHOR_EMAIL` (use your GitHub noreply address to have them linked to your
 account). Pushing still never happens inside the agent's sandbox: the agent never sees the
 token. Changes larger than 5 MB can't be turned into a PR from Thinair.
@@ -398,8 +409,10 @@ them.
   `THINAIR_TRUSTED_PROXIES` (loopback and private ranges, i.e. Caddy), and Caddy ignores that
   header from clients. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
-- **GitHub token (optional):** used only by clone/push containers and Thinair's own GitHub API
-  calls, never by install, test or agent runs, and never stored or logged. See [Private repositories](#private-repositories).
+- **GitHub access (optional):** the GitHub App's keys (one repository, at most an hour, revoked after
+  each step) or a token reach only clone/push containers and Thinair's own GitHub API calls, never
+  install, test or agent runs, and are never logged. The app's private key is a file in the data
+  volume, never the database. See [Private repositories](#private-repositories).
 - **Outbound allowlist for agents:** Claude Code runs can reach only `api.anthropic.com`,
   `claude.ai` and `platform.claude.com`. The agent's container sits on a private network whose
   only way out is a per-run proxy that tunnels HTTPS to allowlisted host names and refuses the
