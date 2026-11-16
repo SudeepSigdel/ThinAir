@@ -78,6 +78,30 @@ characters containing dots, so Thinair treats tokens as opaque (printable ASCII,
   jobs use it. Members' own installations are a later phase.
 - **Remote runners** keep using their own `THINAIR_GITHUB_TOKEN`; the server never sends them app keys.
 
+## Members' own GitHub accounts
+
+Phase 7 lets each member connect an installation of the server's app on **their own** account.
+
+1. The admin turns the app **public** in its GitHub settings (Advanced) once. Apps created before this
+   feature also need a Disconnect, then Connect, so GitHub is given a user-authorization callback URL.
+2. A member taps **Connect my GitHub**. Thinair sends them to GitHub's authorize page with a one-time
+   `state` it issued for them (10 minutes, single use, only its SHA-256 stored). If they haven't installed
+   the app yet, they are sent to its install page; they tap **Connect my GitHub** again afterwards.
+3. GitHub sends them back to `/api/github/callback/user` with a `code`. Nothing leaves the server unless the
+   `state` is live. Thinair trades the code (with the app's client secret, from the secret file) for a
+   short-lived user token, reads `GET /user` and `GET /user/installations`, and drops the token (it is never
+   stored or logged).
+4. An installation is claimed **only if it is in that user's own list** and the app's own list (the
+   authoritative one). A spoofed installation id claims nothing. An installation already owned by the server
+   or another member is never taken over: remove the app on GitHub and install it again.
+
+Which installation a job may use: the person's own installation for their repositories; the server's
+installation and the `THINAIR_GITHUB_TOKEN` only if they may use the server's connection (admins, or
+`THINAIR_GITHUB_FOR_MEMBERS`). A member with their own installation can open pull requests even without that
+setting. Known limit: if an admin taps refresh on GitHub's side between a member installing the app and
+returning to Thinair, that installation is recorded as the server's and the member can't claim it (remove it
+on GitHub and install again).
+
 ## Commands
 
 ```sh

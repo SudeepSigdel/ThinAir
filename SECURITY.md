@@ -73,6 +73,11 @@ agents) inside Docker containers.
   404). "Add a phone" creates the same one-time pairing code as `thinair qr`, drawn by the server as
   an SVG path so no QR library or third party sees it; only an admin can make a code for someone
   else. All `/api/devices*` routes need a login.
+- Members can connect their own GitHub installation. The callback (`/api/github/callback/user`) is an
+  open route that acts only on a live one-time state issued to a signed-in person, is throttled with the
+  login throttle, and claims an installation only when it is in that person's own `GET /user/installations`
+  list (their user token is used for two read calls and never stored). Installations owned by the server or
+  another member are never taken over, and one person's installation is never used for anyone else's jobs.
 - `GET /api/meta` is open (version, API level, feature names: nothing private) and throttled to
   60 requests a minute per address. First-run progress (`thinair stats`) is stored locally only.
 - Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is

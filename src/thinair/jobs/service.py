@@ -195,7 +195,7 @@ class JobService:
         """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
         from thinair.db.models import JobResult
         from thinair.jobs.pr import PRError, check_pr_possible, require_credentials
-        from thinair.users import github_token_allowed, job_user, too_many_jobs
+        from thinair.users import github_allowed, job_user, too_many_jobs
 
         if JobKind.PR not in self._executors:
             raise PRError("unsupported_job", "Opening pull requests is not available.")
@@ -205,7 +205,7 @@ class JobService:
             result = s.get(JobResult, agent_job_id)
             check_pr_possible(parent, result)
             assert parent is not None and result is not None
-            if not github_token_allowed(job_user(s, parent)):
+            if not github_allowed(job_user(s, parent)):
                 raise PRError("github_not_allowed", GITHUB_NOT_ALLOWED)
             refusal = too_many_jobs(s, parent.user_id)
             if refusal:

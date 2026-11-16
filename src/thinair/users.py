@@ -128,6 +128,18 @@ def github_token_allowed(user: User | None) -> bool:
     return user is None or user.is_admin or s.github_token_for_members or s.github_for_members
 
 
+def github_allowed(user: User | None) -> bool:
+    """May this person's jobs use any GitHub access: the server's connection, or an installation
+    of their own?"""
+    if github_token_allowed(user):
+        return True
+    if user is None:
+        return False
+    from thinair.github_app import has_own_installation
+
+    return has_own_installation(user.id)
+
+
 # ---- how many unfinished jobs a member may have -------------------------------------------------
 def job_limit(user: User | None) -> int | None:
     """Unfinished jobs this user may have at once, or None for no limit. The owner and admins are

@@ -99,8 +99,19 @@ class GitHubAccess:
 
     `note` says why the app could not be used (shown in clone failure hints)."""
 
-    def __init__(self, app_factory: Callable | None = None) -> None:
+    def __init__(
+        self,
+        app_factory: Callable | None = None,
+        *,
+        user_id: str | None = None,
+        use_server: bool = True,
+    ) -> None:
+        """`user_id` is the person the step runs for (None = the owner); `use_server` says whether
+        they may use the server's connection (the server's app installations and the PAT).
+        A member's own installations are always theirs to use."""
         self._factory = app_factory
+        self.user_id = user_id
+        self.use_server = use_server
         self.note: str | None = None
 
     @staticmethod
@@ -129,6 +140,9 @@ class GitHubAccess:
             if iid is None:
                 self.note = "not_installed"
                 return None
+            if not self._may_use(iid):
+                self.note = "not_yours"
+                return None
             token = app.mint_token(iid, PERMISSIONS[need], repo=name)
         except GitHubAPIError as e:
             self.note = e.message
@@ -138,6 +152,22 @@ class GitHubAccess:
             return None  # not a github.com repository URL
         return Credential(token, "app", lambda: app.revoke(token))
 
+    def _may_use(self, installation_id: int) -> bool:
+        """An installation is usable by its owner; the server's (and any not recorded yet, which
+        count as the server's) only by people allowed to use the server's connection."""
+        from thinair.db.models import GitHubInstallation
+        from thinair.db.session import session_scope
+
+        try:
+            with session_scope() as s:
+                row = s.get(GitHubInstallation, installation_id)
+                owner = row.user_id if row is not None and row.removed_at is None else None
+        except Exception:  # noqa: BLE001 - no tables yet: behave as before members existed
+            owner = None
+        if owner is not None:
+            return owner == self.user_id
+        return self.use_server
+
     async def token_for(self, repo_url: str, need: str) -> Credential | None:
         """`need` is "clone", "push" or "pr". Raises GitHubTokenError if THINAIR_GITHUB_TOKEN
         is set but malformed (as before)."""
@@ -145,6 +175,8 @@ class GitHubAccess:
             cred = await asyncio.to_thread(self._from_app, repo_url, need)
             if cred is not None:
                 return cred
+        if not self.use_server:
+            return None  # the token in .env is the server's
         token = github_token()
         return Credential(token, "token") if token else None
 

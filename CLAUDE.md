@@ -512,6 +512,19 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   `beforeinstallprompt` -> "Install the app", "Not now" remembered in localStorage; manifest `id` + `share_target`
   (a shared GitHub link prefills the add-project form). Real push delivery is untested here (needs a real phone).
 
+## Members' own GitHub (onboarding v2 phase 7, docs/github.md "Members' own GitHub accounts")
+- `GitHubInstallation.user_id` NULL = the server's, else the member's. `GitHubAccess(user_id=, use_server=)`: the person's
+  own installation is theirs; the server's (and unrecorded ones, which count as the server's) and the PAT only if
+  `use_server`. A repo covered by someone else's installation gives note `not_yours`. `users.github_allowed(user)` = may use
+  the server's connection OR has an installation of their own (PR submit/executor); `jobs.executors.github_access_for(owner)`
+  returns the plain bool unless the member has their own (test_users asserts a bool).
+- Flow (all documented behaviour, no install-time OAuth): `POST /api/github/mine/start` -> authorize URL with our `state`
+  (purpose `github_member`, bound to the member) -> open `GET /api/github/callback/user` -> `exchange_user_code` (client secret
+  from `secrets/github-app.json`, form body) -> `user_installations` -> `claim_installations` (user's list ∩ the app's list,
+  never takes over owned rows). `AppCredentials.callback_ready` (manifest now has `callback_urls`); older apps need Reconnect.
+  `sync_installations` never changes an existing row's owner. Picker lists the person's own installations (+ the server's if
+  allowed). Not verified against a real GitHub (needs two accounts).
+
 ## The core loop UI (onboarding v2 phase 6)
 - Scripts (plain, `defer`, no build step; top-level `let`/`const` and functions are shared globals, order in
   `index.html` matters): `diff.js` (pure parser, tested under Node), `app.js` (helpers, api, routing, home, DOMContentLoaded

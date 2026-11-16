@@ -31,6 +31,16 @@ def issue_state(session: Session, purpose: str, user_id: str | None = None) -> s
     return state
 
 
+def consume_state_user(
+    session: Session, state: str | None, purpose: str
+) -> tuple[bool, str | None]:
+    """Like `consume_state`, and also the person the state was issued for (None = the owner)."""
+    if not consume_state(session, state, purpose):
+        return False, None
+    row = session.get(OneTimeState, _hash(state or ""))
+    return True, row.user_id if row is not None else None
+
+
 def consume_state(session: Session, state: str | None, purpose: str) -> bool:
     """True exactly once for a live state of this purpose. The update is conditional, so two
     simultaneous callbacks cannot both win."""

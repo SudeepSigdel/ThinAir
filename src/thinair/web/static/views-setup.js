@@ -5,6 +5,9 @@
 // ---- Connect GitHub (the app) and the repository picker --------------------------------------
 const GITHUB_RESULTS = {
   failed: "GitHub didn't finish. Nothing was changed. Try again.",
+  denied: "You didn't allow Thinair on GitHub. Nothing was changed.",
+  mine_connected: "Your GitHub is connected. Pick a repository.",
+  mine_taken: "That installation already belongs to someone else on this server. Remove the app on GitHub and install it again from your account.",
   bad_state: "That sign-in link has expired or was already used. Tap Connect GitHub again.",
   no_app: "Thinair has no GitHub App yet. Tap Connect GitHub.",
   sync_failed: "Couldn't read what GitHub installed. Wait a moment and reload.",
@@ -50,12 +53,16 @@ function renderGithub(st) {
   }
   $("github-intro").textContent =
     "Thinair creates its own private GitHub App on your account. You choose which repositories it can see.";
+  show("github-members-note", false);
+  show("github-mine", false);
   if (!st.can_manage) {
     $("github-intro").textContent = "";
     state.textContent = connected
       ? "GitHub is connected by an admin."
       : "GitHub isn't connected yet. Ask an admin to connect it.";
     state.className = connected ? "ok" : "";
+    renderMine(st);
+    if (result && GITHUB_RESULTS[result]) showError("github-error", GITHUB_RESULTS[result]);
     return;
   }
   if (connected) {
@@ -72,6 +79,7 @@ function renderGithub(st) {
     show("github-manage");
     show("github-disconnect");
     $("github-intro").textContent = "";
+    showMembersNote(st, apps);
   } else if (st.mode === "app" && apps && apps.slug) {
     state.textContent = "Almost there. Thinair's app exists but isn't installed on any repository yet.";
     state.className = "warn";
@@ -101,6 +109,64 @@ function renderGithub(st) {
   }
   if (result && GITHUB_RESULTS[result]) showError("github-error", GITHUB_RESULTS[result]);
   else showError("github-error", "");
+}
+
+// For admins, once connected: how people on this server can connect their own GitHub accounts.
+function showMembersNote(st, app) {
+  const note = $("github-members-note");
+  note.replaceChildren();
+  if (!st.callback_ready) {
+    note.append("Want people on this server to connect their own GitHub accounts? Reconnect GitHub once (Disconnect, then Connect) to enable it.");
+  } else if (app && app.slug) {
+    note.append("People on this server can connect their own GitHub accounts once the app is public: ", el("a", { href: `https://github.com/settings/apps/${encodeURIComponent(app.slug)}/advanced`, target: "_blank", rel: "noopener noreferrer", text: "turn on Make public in its settings ↗" }));
+  }
+  show("github-members-note", note.childNodes.length > 0);
+}
+
+// A member's own GitHub account (their installation of the server's app).
+function renderMine(st) {
+  const m = st.mine;
+  if (!m) return;
+  const has = m.installations.length > 0;
+  show("github-mine");
+  $("github-mine-list").replaceChildren(
+    ...m.installations.map((i) =>
+      el("li", {}, el("strong", { text: i.account }), el("small", { class: "muted", text: ` · ${i.selection === "all" ? "all repositories" : "selected repositories"}` })),
+    ),
+  );
+  $("github-mine-text").textContent = has
+    ? "Your tasks use your own GitHub access for these repositories."
+    : m.can_connect
+      ? "Connect your own GitHub account to work on your own repositories. You choose which ones."
+      : "An admin needs to reconnect GitHub once so people can connect their own account.";
+  show("github-mine-connect", m.can_connect);
+  $("github-mine-connect").textContent = has ? "Change or reconnect" : "Connect my GitHub";
+  show("github-mine-forget", has);
+  show("github-pick", has);
+}
+
+async function connectMine() {
+  const b = $("github-mine-connect");
+  b.disabled = true;
+  showError("github-error", "");
+  try {
+    const r = await api("/api/github/mine/start", { method: "POST" });
+    location.href = r.action; // GitHub asks them to allow Thinair, then sends them back
+  } catch (e) {
+    b.disabled = false;
+    if (!(e instanceof AuthError)) showError("github-error", e.message);
+  }
+}
+
+async function forgetMine() {
+  if (!confirm("Forget your GitHub connection here? Remove the app on GitHub to revoke it there too.")) return;
+  try {
+    await api("/api/github/mine", { method: "DELETE" });
+    github.status = await api("/api/github");
+    renderGithub(github.status);
+  } catch (e) {
+    if (!(e instanceof AuthError)) showError("github-error", e.message);
+  }
 }
 
 async function connectGithub() {
