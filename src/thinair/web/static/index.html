@@ -12,21 +12,106 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/diff.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/views-jobs.js" defer></script>
+  <script src="/static/views-account.js" defer></script>
+  <script src="/static/views-setup.js" defer></script>
+  <script src="/static/views-settings.js" defer></script>
+  <script src="/static/views-diff.js" defer></script>
 </head>
 <body>
   <header class="bar">
     <a class="brand" href="#/">Thinair</a>
     <span class="bar-end">
       <span id="who" class="who" hidden></span>
-      <a id="nav-github" class="link" href="#/setup/github" hidden>GitHub</a>
-      <a id="nav-agents" class="link" href="#/agents" hidden>Agents</a>
-      <button id="logout" class="link" type="button" hidden>Log out</button>
     </span>
   </header>
 
+  <p id="offline-banner" role="status" hidden>Offline. Showing what was loaded.</p>
   <main>
     <p id="loading" class="muted">Loading…</p>
+
+    <!-- Activity: every job, newest first -->
+    <section id="view-activity" hidden>
+      <h1>Activity</h1>
+      <ul id="activity-jobs" class="jobs"></ul>
+      <p id="activity-empty" class="muted" hidden>No jobs yet. Start one from a project.</p>
+      <p class="error" id="activity-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" hidden>
+      <h1>Settings</h1>
+      <ul class="rows" id="settings-rows"></ul>
+      <p class="caption section-label">This server</p>
+      <ul class="rows">
+        <li><span class="row-static"><span>Thinair <span id="settings-version"></span></span></span></li>
+        <li><span class="row-static"><span class="val" id="settings-url"></span></span></li>
+      </ul>
+      <button id="logout" class="secondary" type="button">Log out</button>
+      <div id="settings-push" hidden></div>
+    </section>
+
+    <!-- Devices -->
+    <section id="view-devices" hidden>
+      <a href="#/settings" class="back">‹ Settings</a>
+      <h1>Devices</h1>
+      <p class="muted">Phones and browsers signed in as you. Signing one out also stops its notifications.</p>
+      <ul class="rows" id="device-list"></ul>
+      <button id="add-phone" type="button">Add a phone</button>
+      <div id="pair-box" hidden>
+        <p class="muted">Scan this with the new phone's camera. It works once, for 10 minutes.</p>
+        <svg id="pair-qr" class="qr" role="img" aria-label="QR code to sign a phone in" xmlns="http://www.w3.org/2000/svg"></svg>
+        <p class="muted">No camera? Open <span id="pair-url"></span> and enter:</p>
+        <p class="code-short" id="pair-short"></p>
+      </div>
+      <p class="error" id="devices-error" role="alert" hidden></p>
+    </section>
+
+    <!-- People (admins) -->
+    <section id="view-people" hidden>
+      <a href="#/settings" class="back">‹ Settings</a>
+      <h1>People</h1>
+      <ul class="rows" id="people-list"></ul>
+      <form id="person-form" class="inline-form" autocomplete="off">
+        <label for="person-name">Add a person</label>
+        <div class="inline">
+          <input id="person-name" type="text" maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" required
+                 autocapitalize="off" spellcheck="false" placeholder="alice">
+          <button type="submit">Add</button>
+        </div>
+      </form>
+      <div id="person-pair" hidden>
+        <p>Added. On their phone, scan this, or type the code:</p>
+        <svg id="person-qr" class="qr" role="img" aria-label="QR code for the new person" xmlns="http://www.w3.org/2000/svg"></svg>
+        <p class="code-short" id="person-short"></p>
+      </div>
+      <p class="error" id="people-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Diff review -->
+    <section id="view-changes" hidden>
+      <a href="#/" id="changes-back" class="back">‹ Job</a>
+      <div class="changes-head">
+        <h1>Changes</h1>
+        <span class="num" id="changes-stat"></span>
+      </div>
+      <p id="changes-summary" class="muted"></p>
+      <div class="diff-tools" id="diff-tools" hidden>
+        <button type="button" id="diff-wrap" class="secondary" aria-pressed="true">Wrap lines</button>
+        <button type="button" id="diff-all" class="link">Expand all</button>
+      </div>
+      <p id="changes-empty" class="muted" hidden>The agent didn't change any files.</p>
+      <p id="changes-truncated" class="warn" hidden>This diff is long; the rest is in the patch.</p>
+      <div id="diff-list" class="diff-list"></div>
+      <div class="jump" id="diff-jump" hidden>
+        <button type="button" id="jump-prev" aria-label="Previous change"></button>
+        <button type="button" id="jump-next" aria-label="Next change"></button>
+      </div>
+      <div class="actionbar" id="changes-bar" hidden></div>
+      <p class="error" id="changes-error" role="alert" hidden></p>
+    </section>
 
     <!-- Notifications banner (Projects and a running job) -->
     <aside id="push-banner" class="setup-card" hidden>
@@ -301,10 +386,6 @@
         <h1 id="repo-title"></h1>
       </div>
       <p class="muted"><a id="repo-link" rel="noopener noreferrer" target="_blank"></a></p>
-      <div class="tabs" role="tablist">
-        <button type="button" id="mode-agent" class="tab" role="tab" aria-selected="true">Agent task</button>
-        <button type="button" id="mode-profile" class="tab" role="tab" aria-selected="false">Resource profile</button>
-      </div>
       <p id="mode-help" class="muted"></p>
       <form id="job-form">
         <div id="agent-fields">
@@ -323,8 +404,10 @@
           <input id="repo-ref" name="ref" type="text" placeholder="default branch" autocapitalize="off"
                  spellcheck="false">
         </details>
+        <p id="agent-signin-row" class="warn" hidden><span id="agent-signin-text"></span> <a id="agent-signin-link" href="#">Sign in</a></p>
         <button type="submit" id="submit-job">Start agent</button>
         <p class="error" id="job-error" role="alert" hidden></p>
+        <p><button type="button" id="mode-toggle" class="link">Measure resources instead</button></p>
       </form>
 
       <div class="row">
@@ -357,6 +440,8 @@
         <span id="job-status" class="chip"></span>
       </div>
       <p id="job-meta" class="muted"></p>
+      <p id="job-state" role="status" hidden></p>
+      <p id="job-conn" role="status" hidden>Reconnecting…</p>
       <p id="job-error-msg" class="error" role="alert" hidden></p>
       <div class="actions">
         <button id="cancel" type="button" class="danger" hidden>Cancel</button>
@@ -402,5 +487,11 @@
       </details>
     </section>
   </main>
+  <button type="button" id="new-msgs" hidden>New messages ↓</button>
+  <nav id="tabbar" aria-label="Main" hidden>
+    <a href="#/" id="tab-projects"></a>
+    <a href="#/activity" id="tab-activity"></a>
+    <a href="#/settings" id="tab-settings"></a>
+  </nav>
 </body>
 </html>

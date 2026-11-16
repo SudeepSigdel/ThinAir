@@ -512,6 +512,34 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   `beforeinstallprompt` -> "Install the app", "Not now" remembered in localStorage; manifest `id` + `share_target`
   (a shared GitHub link prefills the add-project form). Real push delivery is untested here (needs a real phone).
 
+## The core loop UI (onboarding v2 phase 6)
+- Scripts (plain, `defer`, no build step; top-level `let`/`const` and functions are shared globals, order in
+  `index.html` matters): `diff.js` (pure parser, tested under Node), `app.js` (helpers, api, routing, home, DOMContentLoaded
+  start), `views-jobs.js` (project, job, conversations, results), `views-account.js` (login, pairing, agents, sign-in),
+  `views-setup.js` (GitHub, picker, setup, health, push, share), `views-settings.js` (tab bar, Activity, Settings, Devices,
+  People), `views-diff.js` (review screen, result and PR cards). `sw.js` caches all of them (bump `CACHE` when the list
+  changes); `test_web.py` fails if a script isn't in `index.html` and the shell, and bans markup-from-string sinks in ALL
+  of them.
+- Tokens (style.css `:root`, dark under `prefers-color-scheme`): `--bg --surface --surface-2 --line --ink --ink-2 --ink-3
+  --accent --accent-ink --accent-soft --ok --warn --danger --danger-ink --info --code-* --add-bg --del-bg`; old names
+  (`--fg --muted --card ...`) are aliases. `test_web.py` asserts WCAG AA for ~30 text/background pairs in both modes. Two
+  plan values were darkened to pass (`--ok`, `--danger`). Icons: `static/icons.svg` sprite + `icon(name, label)`;
+  `scripts/make_icons.py` (stdlib) redraws icon.svg and the PNGs.
+- Routes: `#/` `#/activity` `#/settings` (+ `/devices` `/people` `/health`) show the bottom tab bar (`updateTabbar`);
+  job, project, setup, sign-in and `#/job/<id>/changes` hide it. API: `/api/devices` (own tokens, revoke, `POST /pair`
+  returns a QR as an SVG path + the short code; `{user}` admin-only), `/api/meta` has `agent_idle_s` for the approval
+  countdown.
+- Diff review: `parseDiff` consumes hunks by their `@@` counts (a removed line starting `-- ` is not a header), flags CRLF
+  (`cr`), "no newline" (`noEol`), binary, rename, add/delete; files render lazily on first open (300 lines per animation
+  frame); first readable file open, >400 changed lines and binary start closed (the "Large change" note sits in the
+  summary so it shows while closed); wrap toggle remembered; jump buttons walk hunks across files.
+- Live job: `#job-state` (queued / the latest `[thinair]` line while starting), `#job-conn` ("Reconnecting..."), raw log
+  folded for agent jobs, `atBottom()`/`afterAppend()` (follow only when at the bottom, else `#new-msgs`), tool rows are
+  buttons, approval cards are `role=alertdialog` with a countdown; first PR celebration once per browser
+  (`thinair.celebrated`), static under reduced motion. Browser smoke (scratch, Edge): 26 checks incl. 320 px, dark,
+  reduced motion, offline. Gotcha: screens render before their data arrives, so tests must wait for the job to finish
+  through the API (the UI keeps the previous job's DOM for a moment).
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

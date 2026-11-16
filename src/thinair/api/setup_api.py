@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)], tags=["s
 open_router = APIRouter(prefix="/api", tags=["meta"])
 
 API_VERSION = 1
-FEATURES = ["github_app", "agent_login", "setup"]
+FEATURES = ["github_app", "agent_login", "setup", "devices"]
 _META_PER_MIN = 60
 _meta_hits: dict[str, deque[float]] = defaultdict(deque)
 _background: set[asyncio.Task] = set()
@@ -58,7 +58,12 @@ def meta(request: Request) -> dict:
         for k in [k for k, v in _meta_hits.items() if not v or v[-1] < now - 60]:
             del _meta_hits[k]
     features = [*FEATURES, "push"] if get_settings().web_push else list(FEATURES)
-    return {"version": __version__, "api": API_VERSION, "features": features}
+    return {
+        "version": __version__,
+        "api": API_VERSION,
+        "features": features,
+        "agent_idle_s": get_settings().agent_idle_s,
+    }
 
 
 # ---- the checklist ------------------------------------------------------------------------------

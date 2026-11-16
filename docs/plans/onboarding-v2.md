@@ -1692,3 +1692,40 @@ Deviations / decisions (please review):
 - Declarative Web Push `navigate` is an absolute https URL when `THINAIR_PUBLIC_URL` is https, else a path.
 
 Follow-ups: the owner's real-phone tests (below); phase 6 moves the banner into Settings.
+
+### Phase 6: The core loop, redesigned (2026-11-17, branch `onboarding-v2/phase-6-core-loop`)
+
+Shipped:
+- Design tokens with a WCAG AA test; hairline/dot-and-word styling; icon sprite and `icon()`; redrawn brand icon with a
+  stdlib generator (`scripts/make_icons.py`); skeleton rows, offline banner, haptics (Android), reduced motion.
+- Bottom tab bar (Projects, Activity, Settings), Activity, Settings with GitHub / Agents / Notifications / Setup health /
+  Devices / People / version / address / Log out; Devices (list, revoke, "Add a phone" QR drawn as an SVG path by the
+  server); People (list, disable, add + pairing code).
+- Composer: "Measure resources instead" replaces the tabs, "Start with <agent>", draft kept per project, inline
+  "isn't signed in. Sign in" row.
+- Live job: prose + one-line tool rows that expand, raw log folded for agent jobs, queued/starting/reconnecting states,
+  follow-the-bottom with a "New messages" pill, approval card (alertdialog, countdown, collapses when answered).
+- Diff review (`#/job/<id>/changes`): `diff.js` parser (Node-tested: CRLF, binary, rename, no-newline, 5,000 lines),
+  wrapped lines with a hanging indent and a sideways-scroll switch, per-file folds, large/binary start closed, jump
+  between changes, sticky Create pull request / Patch bar. Result card with Review changes; "Pull request opened" card
+  with the one-time celebration.
+- `app.js` split into seven plain scripts (no build step).
+
+Deviations / decisions (please review):
+- Two plan colours were darkened to pass AA on the tinted diff backgrounds: `--ok` #15803d -> #137537, `--danger`
+  #dc2626 -> #c81e1e. Added `--danger-ink` (white on light, near-black on dark): dark `--danger` with white text was
+  2.8:1.
+- Notifications has no screen of its own: its Settings row re-opens the banner (with test / turn off).
+- "Always allow commands like this" on the approval card is not built: the buttons are the agent's own options, as
+  before.
+- The first-PR celebration is remembered per browser (localStorage), not per user on the server.
+- Optimistic UI is limited to what already was (chat messages); skip-step and approvals still wait for the server.
+- Android share target opens the add-project form with the link filled in (it doesn't add the repository by itself).
+- The old header links (GitHub, Agents, Log out) moved into Settings; the phase 2 and 3 smoke scripts that clicked them
+  were updated or are stale (not in CI).
+- The "added by an admin" person gets a pairing code, but the "first" token `POST /api/users` creates stays unused
+  (revoke it from the CLI if you care).
+
+Not verified: the plan's real-device checks (a real 30-file diff one-handed on a 6-inch phone; VoiceOver and
+TalkBack; airplane mode on a phone). Chrome-level checks pass at 390 px and 320 px, in dark mode, with reduced
+motion and offline.

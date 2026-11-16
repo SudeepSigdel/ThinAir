@@ -291,7 +291,8 @@ def test_meta_is_open_small_and_throttled(client) -> None:
     assert body == {
         "version": __version__,
         "api": 1,
-        "features": ["github_app", "agent_login", "setup", "push"],
+        "features": ["github_app", "agent_login", "setup", "devices", "push"],
+        "agent_idle_s": get_settings().agent_idle_s,
     }
     codes = [client.get("/api/meta").status_code for _ in range(70)]
     assert codes[:58].count(200) == 58 and codes[-1] == 429  # 60 a minute per address

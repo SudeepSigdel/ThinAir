@@ -2,10 +2,17 @@
 // API calls (/api/...) are never cached or intercepted: job data always comes from the server.
 "use strict";
 
-const CACHE = "thinair-shell-v1";
+const CACHE = "thinair-shell-v2";
 const SHELL = [
   "/",
   "/static/app.js",
+  "/static/diff.js",
+  "/static/views-jobs.js",
+  "/static/views-account.js",
+  "/static/views-setup.js",
+  "/static/views-settings.js",
+  "/static/views-diff.js",
+  "/static/icons.svg",
   "/static/style.css",
   "/static/icon.svg",
   "/static/icon-192.png",
