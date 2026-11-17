@@ -99,9 +99,15 @@ def disable_user(session: Session, name: str) -> User:
     tokens = session.exec(
         select(ApiToken).where(ApiToken.user_id == user.id, ApiToken.revoked_at.is_(None))  # type: ignore[union-attr]
     )
+    ids = []
     for t in tokens:
         t.revoked_at = now
         session.add(t)
+        ids.append(t.id)
+    if ids:
+        from thinair.auth import _drop_push
+
+        _drop_push(session, ids)
     session.commit()
     return user
 

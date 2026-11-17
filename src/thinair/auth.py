@@ -51,12 +51,21 @@ def verify_token(session: Session, token: str) -> ApiToken | None:
     return row
 
 
+def _drop_push(session: Session, token_ids: list[str]) -> None:
+    from sqlmodel import delete
+
+    from thinair.db.models import PushSubscription
+
+    session.exec(delete(PushSubscription).where(PushSubscription.token_id.in_(token_ids)))  # type: ignore[attr-defined,call-overload,arg-type]
+
+
 def revoke_token(session: Session, token_id: str) -> bool:
     row = session.get(ApiToken, token_id)
     if row is None or row.revoked_at is not None:
         return False
     row.revoked_at = utcnow()
     session.add(row)
+    _drop_push(session, [token_id])  # a revoked phone stops getting notifications
     session.commit()
     return True
 

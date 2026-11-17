@@ -7,6 +7,7 @@ were running are marked failed ("interrupted") rather than silently lost.
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -47,6 +48,9 @@ class JobContext:
     # Set by an executor whose job can take input while running (agent conversations):
     # an async function that delivers one command and says whether it was delivered.
     on_input: "Callable[[dict[str, Any]], Awaitable[bool]] | None" = None
+    # Set by the service: tell the person a running conversation needs them ("permission_request"
+    # or "waiting"). At most one push per job per minute; never blocks or fails the job.
+    attention: "Callable[[str], None] | None" = None
 
 
 Executor = Callable[[JobContext, SandboxManager | None], Awaitable[ExecResult]]
@@ -63,6 +67,8 @@ class JobService:
         job_timeout_s: float = 3600,
         sweep_on_start: bool = True,
         notifier: "Callable[[str], Awaitable[None]] | None" = None,
+        push_notifier: "Callable[[str], Awaitable[None]] | None" = None,
+        attention_notifier: "Callable[[str, str], Awaitable[None]] | None" = None,
         remote_executor: Executor | None = None,
         goes_remote: Callable[[Job], bool] | None = None,
         remote_workers: int = 8,
@@ -87,6 +93,9 @@ class JobService:
         self._user_cancelled: set[str] = set()
         self._stopping = False
         self._notifier = notifier
+        self._push_notifier = push_notifier  # Web Push; `notifier` stays Telegram's
+        self._attention_notifier = attention_notifier
+        self._attention_at: dict[str, float] = {}
         self._notifications: set[asyncio.Task[None]] = set()
 
     # ---- lifecycle -----------------------------------------------------------------------
@@ -305,6 +314,7 @@ class JobService:
             s.commit()
         self.events.emit(job_id, EventType.STATUS, {"status": JobStatus.RUNNING.value})
         ctx = JobContext(job=job, repo=repo, events=self.events)  # type: ignore[arg-type]
+        ctx.attention = lambda kind, _id=job_id: self.attention(_id, kind)
         self._contexts[job_id] = ctx
         executor = self._remote_executor if remote else self._executors[job.kind]
         timeout = asyncio.timeout(self._timeout_s)
@@ -346,6 +356,7 @@ class JobService:
             self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         finally:
             self._contexts.pop(job_id, None)
+            self._attention_at.pop(job_id, None)
             self._user_cancelled.discard(job_id)
             if not self._stopping and not requeued:
                 self._funnel(job_id)
@@ -378,19 +389,44 @@ class JobService:
         self._queue.put_nowait(job_id)
         return True
 
+    def attention(self, job_id: str, kind: str) -> None:
+        """A conversation is waiting for the person (an approval, or their turn). Debounced to one
+        push per job per `ATTENTION_DEBOUNCE_S`; fire and forget."""
+        if self._attention_notifier is None or self._stopping:
+            return
+        now = _now()
+        if now - self._attention_at.get(job_id, -1e9) < ATTENTION_DEBOUNCE_S:
+            return
+        self._attention_at[job_id] = now
+        task = asyncio.create_task(
+            self._attend_safely(job_id, kind), name=f"thinair-attention-{job_id}"
+        )
+        self._notifications.add(task)
+        task.add_done_callback(self._notifications.discard)
+
+    async def _attend_safely(self, job_id: str, kind: str) -> None:
+        try:
+            await self._attention_notifier(job_id, kind)  # type: ignore[misc]
+        except Exception as e:  # noqa: BLE001
+            log.warning("job %s: attention push failed (%s)", job_id, type(e).__name__)
+
     def _announce(self, job_id: str) -> None:
         """Fire-and-forget notification; it can never delay or fail the job."""
-        if self._notifier is None:
+        if self._notifier is None and self._push_notifier is None:
             return
         task = asyncio.create_task(self._notify_safely(job_id), name=f"thinair-notify-{job_id}")
         self._notifications.add(task)
         task.add_done_callback(self._notifications.discard)
 
     async def _notify_safely(self, job_id: str) -> None:
-        try:
-            await self._notifier(job_id)  # type: ignore[misc]
-        except Exception:
-            log.exception("job %s: notification failed", job_id)
+        # Each notifier on its own: one failing (or being slow) must not stop the other.
+        for notifier in (self._notifier, self._push_notifier):
+            if notifier is None:
+                continue
+            try:
+                await notifier(job_id)
+            except Exception:
+                log.exception("job %s: notification failed", job_id)
 
     def _finish(
         self, job_id: str, status: JobStatus, code: str | None, message: str | None
@@ -417,6 +453,13 @@ class JobService:
             job.finished_at = utcnow()
             s.add(job)
             s.commit()
+
+
+ATTENTION_DEBOUNCE_S = 60.0
+
+
+def _now() -> float:  # a seam so tests can move the clock without touching asyncio's
+    return time.monotonic()
 
 
 GITHUB_NOT_ALLOWED = (

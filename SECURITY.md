@@ -60,6 +60,15 @@ agents) inside Docker containers.
   stored only as a SHA-256. Because 40 bits is guessable in principle, every wrong short code seen
   anywhere counts against all live short codes and 20 of them burn the short form (the long QR
   code is unaffected), on top of the per-address failed-login throttle.
+- Web Push notifications: the payload is encrypted end to end to the browser (RFC 8291) and only
+  holds the repo name, job kind, outcome and the first line of the task (never logs, diffs or
+  summaries). Thinair POSTs only to the push services' own hosts (Google, Mozilla, Apple,
+  Microsoft: https, no credentials, port or IP literal, redirects never followed), so a crafted
+  subscription can't turn the server into a request forger. A subscription belongs to the API
+  token that made it and is deleted when the token is revoked or the user disabled. The VAPID
+  private key is a 0600 file in the data volume; if stolen, someone could send notifications to
+  subscribed phones until it is regenerated (delete `secrets/vapid.json`: phones must turn
+  notifications on again). It grants no access to Thinair or its data.
 - `GET /api/meta` is open (version, API level, feature names: nothing private) and throttled to
   60 requests a minute per address. First-run progress (`thinair stats`) is stored locally only.
 - Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is
