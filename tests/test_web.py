@@ -51,11 +51,91 @@ def test_no_inline_scripts_or_styles_so_the_csp_holds() -> None:
     assert "<style" not in html and " style=" not in html and "onclick" not in html.lower()
 
 
+SCRIPTS = sorted(p.name for p in STATIC_DIR.glob("*.js"))
+
+
 def test_ui_code_never_writes_html_from_data() -> None:
-    """XSS guard: server text (log lines, repo names) must only go in via textContent."""
-    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
-        assert sink not in js, sink
+    """XSS guard: server text (log lines, repo names, diffs) must only go in via textContent.
+    Covers every script the page loads (the UI is split into several plain files)."""
+    assert {"app.js", "diff.js", "sw.js"} | {
+        f"views-{n}.js" for n in ("jobs", "account", "setup", "settings", "diff")
+    } <= set(SCRIPTS)
+    for name in SCRIPTS:
+        js = (STATIC_DIR / name).read_text(encoding="utf-8")
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
+            assert sink not in js, f"{name}: {sink}"
+
+
+def test_every_script_file_is_loaded_by_the_page_and_cached_by_the_service_worker() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    sw = (STATIC_DIR / "sw.js").read_text(encoding="utf-8")
+    for name in SCRIPTS:
+        if name == "sw.js":
+            continue
+        assert f'src="/static/{name}"' in html, f"{name} is not loaded by index.html"
+        assert f'"/static/{name}"' in sw, f"{name} is not in the service worker's shell"
+    assert "/static/icons.svg" in sw
+
+
+# ---- design tokens: WCAG AA contrast for every text/background pair (docs/plans/onboarding-v2.md 5.2)
+def _tokens(block: str) -> dict[str, str]:
+    return dict(re.findall(r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;", block))
+
+
+def _blocks() -> tuple[dict[str, str], dict[str, str]]:
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    light = _tokens(css[css.index(":root {") : css.index("@media (prefers-color-scheme: dark)")])
+    dark_start = css.index("@media (prefers-color-scheme: dark)")
+    dark = _tokens(css[dark_start : css.index("* { box-sizing", dark_start)])
+    return light, dark
+
+
+def _luminance(hex_color: str) -> float:
+    def chan(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+
+
+def contrast(a: str, b: str) -> float:
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+TEXT_PAIRS = [
+    ("ink", "bg"), ("ink", "surface"), ("ink", "surface-2"),
+    ("ink-2", "bg"), ("ink-2", "surface"), ("ink-2", "surface-2"),
+    ("ink-3", "bg"), ("ink-3", "surface"), ("ink-3", "surface-2"),  # captions, placeholders
+    ("accent", "bg"), ("accent", "surface"),  # links
+    ("accent-ink", "accent"),  # button labels
+    ("danger-ink", "danger"),
+    ("ok", "bg"), ("ok", "surface"), ("warn", "bg"), ("warn", "surface"),
+    ("danger", "bg"), ("danger", "surface"), ("info", "bg"), ("info", "surface"),
+    ("code-ink", "code-bg"),
+    ("ink", "add-bg"), ("ink", "del-bg"), ("ink-3", "add-bg"), ("ink-3", "del-bg"),
+    ("ok", "add-bg"), ("danger", "del-bg"),  # the +N / -N numbers on diff lines
+    ("ink", "accent-soft"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("mode", [0, 1], ids=["light", "dark"])
+def test_palette_meets_wcag_aa_in_light_and_dark(mode) -> None:
+    light, dark = _blocks()
+    tokens = light if mode == 0 else {**light, **dark}  # dark overrides light
+    failures = []
+    for fg, bg in TEXT_PAIRS:
+        ratio = contrast(tokens[fg], tokens[bg])
+        if ratio < 4.5:
+            failures.append(f"{fg} on {bg}: {ratio:.2f}")
+    assert not failures, failures
+
+
+def test_the_accent_fix_that_motivated_the_new_palette() -> None:
+    light, _ = _blocks()
+    assert contrast("#ffffff", "#0d9488") < 4.5  # yesterday's accent failed AA for button labels
+    assert contrast(light["accent-ink"], light["accent"]) >= 5.0
 
 
 def test_manifest_makes_the_app_installable(client) -> None:

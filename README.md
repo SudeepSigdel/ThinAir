@@ -126,6 +126,25 @@ No camera? `thinair qr --short` also prints a short code like `K7QM-2XVD`: open 
 type it into "Or use a code" on the login screen. It is the same one-time pairing, valid for the
 same time; 20 wrong guesses (from anywhere) burn the short code, and the QR code keeps working.
 
+### Around the app
+
+Three tabs at the bottom: **Projects**, **Activity** (every job, newest first) and **Settings**
+(GitHub, Agents, Notifications, Setup health, **Devices**, **People**, the version and address,
+Log out). **Devices** lists the phones signed in as you with a **Revoke** for each, and **Add a
+phone** draws a pairing QR code (and the typed code) right in the app. **People** (admins) adds
+someone and shows the code for their phone.
+
+On a job, the agent's words read as prose, its tool calls are one line you tap to expand, and
+the raw log is folded away. New messages only scroll the page when you're already at the bottom;
+otherwise a "New messages" pill appears. An approval is a card with the exact command, a
+countdown to when the agent gives up waiting, and the agent's own buttons.
+
+**Review changes** opens the diff built for a phone: lines wrap (with a switch for sideways
+scrolling), each file folds, big and binary files start closed, and two buttons jump between
+changes across files. **Create pull request** sits in the bar at the bottom (or **Connect GitHub**
+when it isn't connected); the first pull request you open gets a small celebration, and only the
+first. It respects reduced-motion settings, works in dark mode and down to 320 px wide.
+
 ### The guided first run
 
 The first time you open the app it shows **You're connected** and walks four steps, each with

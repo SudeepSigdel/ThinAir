@@ -69,6 +69,10 @@ agents) inside Docker containers.
   private key is a 0600 file in the data volume; if stolen, someone could send notifications to
   subscribed phones until it is regenerated (delete `secrets/vapid.json`: phones must turn
   notifications on again). It grants no access to Thinair or its data.
+- The **Devices** screen shows only your own signed-in devices and revokes only your own (others get
+  404). "Add a phone" creates the same one-time pairing code as `thinair qr`, drawn by the server as
+  an SVG path so no QR library or third party sees it; only an admin can make a code for someone
+  else. All `/api/devices*` routes need a login.
 - `GET /api/meta` is open (version, API level, feature names: nothing private) and throttled to
   60 requests a minute per address. First-run progress (`thinair stats`) is stored locally only.
 - Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is

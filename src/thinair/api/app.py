@@ -10,7 +10,16 @@ from fastapi import FastAPI
 
 from thinair import __version__, setup_state
 from thinair.agents.login import DockerLoginBackend, LoginBackend, LoginHub
-from thinair.api import auth, github_api, login_api, push_api, routes, runner_api, setup_api
+from thinair.api import (
+    auth,
+    devices_api,
+    github_api,
+    login_api,
+    push_api,
+    routes,
+    runner_api,
+    setup_api,
+)
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
@@ -123,6 +132,7 @@ def create_app(
     app.include_router(github_api.open_router)
     app.include_router(setup_api.router)
     app.include_router(push_api.router)
+    app.include_router(devices_api.router)
     app.include_router(setup_api.open_router)
     app.include_router(runner_api.admin_router)
     app.include_router(runner_api.runner_router)
