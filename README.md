@@ -122,6 +122,25 @@ installer shows one at the end when phone access is set up. The code works once,
 and never contains your token: the phone gets a token of its own, which you can revoke on its own
 (`thinair token list`, `thinair token revoke <id>`). Or open the URL and paste your token.
 
+No camera? `thinair qr --short` also prints a short code like `K7QM-2XVD`: open the address and
+type it into "Or use a code" on the login screen. It is the same one-time pairing, valid for the
+same time; 20 wrong guesses (from anywhere) burn the short code, and the QR code keeps working.
+
+### The guided first run
+
+The first time you open the app it shows **You're connected** and walks four steps, each with
+**Skip for now**: connect GitHub, sign in to your agent (pick Claude Code, Codex or something
+else first, and Thinair starts preparing that agent in the background), pick a repository, and try
+a first task. A **Finish setting up** card on Projects remembers where you were, and
+**Dismiss** hides it for good. Admins also get **Setup health** (at the bottom of Projects): the
+same checks as `thinair doctor`, problems first, with one-tap fixes such as **Prepare now** for
+the sandbox images. Opening it sends nothing anywhere.
+
+`thinair stats` prints when each step happened and how long it took (paired, GitHub connected,
+agent signed in, first job, first agent success, first pull request). **Those timestamps never
+leave your server**: Thinair has no telemetry and nowhere to send any. If you want to share them,
+paste the command's output into an issue yourself.
+
 Then use "Add to Home Screen". It runs like an app. Jobs keep
 running on the server when you close it, and the live log picks up where it left off when you
 come back.
@@ -378,7 +397,9 @@ thinair user add|list|disable    manage users (see "Several users")
 thinair runner add|list|disable  manage remote runners (on the server)
 thinair runner start             run profile jobs for a server (on the runner machine)
 thinair doctor                   check the install and print how to fix problems
-thinair qr [--user NAME]         QR code that signs a phone in (one-time, 10 minutes)
+thinair qr [--user NAME] [--short]  QR code that signs a phone in (one-time; --short adds a typed code)
+thinair stats                    when each first-run step happened (local only)
+thinair github status|disconnect the GitHub connection (see "Private repositories")
 thinair user limit NAME N        max unfinished jobs for a member (0 = none, or `default`)
 thinair images                   prepare the sandbox images now (else the first job does it)
 thinair cache list|clear         per-project dependency caches (package downloads)

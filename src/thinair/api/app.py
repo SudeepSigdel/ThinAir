@@ -8,9 +8,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from thinair import __version__
+from thinair import __version__, setup_state
 from thinair.agents.login import DockerLoginBackend, LoginBackend, LoginHub
-from thinair.api import auth, github_api, login_api, routes, runner_api
+from thinair.api import auth, github_api, login_api, routes, runner_api, setup_api
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
@@ -29,6 +29,7 @@ log = logging.getLogger("thinair")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     upgrade(get_engine())  # once at startup; creates/updates the SQLite file
+    setup_state.mark("installed")  # first start only; the funnel never leaves the server
     with session_scope() as session:
         new_token = bootstrap_admin_token(session, get_settings().admin_token)
     if new_token:
@@ -116,6 +117,8 @@ def create_app(
     app.include_router(login_api.router)
     app.include_router(github_api.router)
     app.include_router(github_api.open_router)
+    app.include_router(setup_api.router)
+    app.include_router(setup_api.open_router)
     app.include_router(runner_api.admin_router)
     app.include_router(runner_api.runner_router)
     mount_web(app)

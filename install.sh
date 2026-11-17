@@ -578,7 +578,10 @@ fi
 if [ -n "$show_qr" ] && has_subcommand qr; then
   say ""
   [ -z "$ADDRESS_CHANGED" ] || say "The address changed, so sign your phone in again (one scan):"
-  if docker compose exec -T thinair thinair qr --help 2>/dev/null | grep -q -- --ttl; then
+  qr_help="$(docker compose exec -T thinair thinair qr --help 2>/dev/null || true)"
+  if printf '%s' "$qr_help" | grep -q -- --short; then
+    docker compose exec -T thinair thinair qr --ttl 30 --short || true
+  elif printf '%s' "$qr_help" | grep -q -- --ttl; then
     docker compose exec -T thinair thinair qr --ttl 30 || true
   else
     docker compose exec -T thinair thinair qr || true

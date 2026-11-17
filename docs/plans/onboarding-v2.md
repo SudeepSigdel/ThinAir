@@ -1630,3 +1630,36 @@ Deviations / decisions (choose-the-best-option, please review):
 
 Follow-ups: owner's real-GitHub round trip (below); phase 4 wires O2/O4 into the guided flow; phase 7 members'
 own installations.
+
+### Phase 4: The first run, end to end (2026-11-17, branch `onboarding-v2/phase-4-first-run`)
+
+Shipped:
+- `setup_state.py` + migration 0011 (`SetupEvent`, `PairingCode.short_hash/failures`), `api/setup_api.py`
+  (`/api/meta`, `/api/setup`, `/api/health`, `/api/health/fix/images`), funnel hooks, `thinair stats`.
+- The pieces phase 1 deferred: Welcome screen, setup state, `/api/meta`, funnel events and short pairing codes
+  (`thinair qr --short`, "Or use a code" on the login screen, the installer prints one).
+- UI: Welcome (O1) with agent choice, one resumable flow O2-O5 with a progress bar and Skip on every step, "Finish
+  setting up" card, starter tasks, empty states for Projects and the project page, Setup health (C8) with one-tap
+  actions, first-run timing line.
+
+Deviations / decisions (please review):
+- `SetupEvent` uses `user_key` ("owner" or the user id) instead of a nullable `user_id`, so the unique key really is
+  one row per person (NULLs are not unique in SQL).
+- The agent step is `done` when the preferred agent's login is known to be good in this server's memory (a sign-in
+  or check since the last start) OR an agent job of that agent already succeeded for that person. After a restart
+  with no such job it shows "isn't signed in yet" until they tap Check or sign in again: running a container on every
+  setup read would break "idle cost near zero".
+- Opening Setup health uses `run_checks(online=False)`: no request leaves the machine. The GitHub token check and
+  version check stay in `thinair doctor` only. Members don't get the screen (403); they see their agent state on Agents.
+- No Settings screen yet (phase 6): Setup health is linked from the bottom of Projects (admins) at its planned route
+  `#/settings/health`. Notifications aren't a setup step until phase 5.
+- Short codes: a wrong short code can't be attributed to a row, so it counts against every live short code (20 burns
+  them). An attacker can therefore burn the short form (not the QR) with 20 guesses; the per-address throttle slows them.
+- `/api/meta` lists only `github_app`, `agent_login`, `setup` as features until push exists.
+
+[verify in build]: every first-run step runs in the browser against fake executors, a fake GitHub and a fake login
+agent (18 checks, light + dark). Not done: the plan's stopwatch run on a fresh VM with someone who hasn't seen the
+product (needs a person); `thinair stats` is what records it.
+
+Follow-ups: the owner's stopwatch run (replace the estimates in section 1 with `thinair stats` numbers); phase 5 adds
+the notifications step.

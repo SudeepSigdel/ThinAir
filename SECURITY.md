@@ -55,6 +55,13 @@ agents) inside Docker containers.
   other users' data. Their messages are size-capped and validated, and a runner can only report
   on jobs it currently holds.
 
+- `thinair qr --short` adds a typed code (8 characters, 40 bits, `XXXX-XXXX`) for phones without a
+  camera. It is the same pairing (one redemption between the QR and the short form, same expiry),
+  stored only as a SHA-256. Because 40 bits is guessable in principle, every wrong short code seen
+  anywhere counts against all live short codes and 20 of them burn the short form (the long QR
+  code is unaffected), on top of the per-address failed-login throttle.
+- `GET /api/meta` is open (version, API level, feature names: nothing private) and throttled to
+  60 requests a minute per address. First-run progress (`thinair stats`) is stored locally only.
 - Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is
   stored) that expires after 10 minutes and works once. It travels in the URL fragment, which
   browsers never send to servers or proxies, and the app removes it from the address bar at once.
