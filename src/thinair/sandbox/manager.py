@@ -416,6 +416,16 @@ class SandboxManager:
             wall = time.monotonic() - t0
             container.reload()
             state = container.attrs.get("State", {})
+            if state.get("ExitCode") == 137 and not state.get("OOMKilled") and not handle.aborted:
+                # Docker sets OOMKilled from a separate cgroup event that can land a moment
+                # after the exit (seen in CI: exit 137 with the flag still false). Look again
+                # briefly before reporting a plain kill.
+                for _ in range(10):
+                    time.sleep(0.2)
+                    container.reload()
+                    state = container.attrs.get("State", {})
+                    if state.get("OOMKilled"):
+                        break
             for t in threads:
                 t.join(timeout=5)
             return SandboxResult(

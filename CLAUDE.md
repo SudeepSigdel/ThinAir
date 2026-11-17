@@ -291,8 +291,8 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (shellcheck SC2032/2033 disabled on purpose). Tailscale missing -> `install_tailscale` (tailscale.com/install.sh),
   `sudo tailscale up` prints the login link; `tailscale serve` retried through sudo (needs root/operator).
 - Oracle detection: `/sys/class/dmi/id/chassis_asset_tag` == OracleCloud.com (what cloud-init uses). Domain mode on
-  Oracle explains the console security list + offers iptables (Ubuntu, `-I INPUT 1`, netfilter-persistent) or
-  firewalld (Oracle Linux). get.docker.com does not support Oracle Linux: docs say Ubuntu.
+  Oracle explains the console security list (+ offers firewalld on Oracle Linux; iptables is not needed, see
+  "Phone reachability"). get.docker.com does not support Oracle Linux: docs say Ubuntu.
 - `thinair doctor` "Version" check: anonymous GET api.github.com/repos/SudeepSigdel/ThinAir/releases/latest; warns
   when newer; update = re-run the installer. Untested on a real Oracle VM (owner will test).
 
@@ -409,7 +409,12 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   server's `SSL_CERT_FILE` at it (uid 10001 can't read Caddy's pki dir). Pass THINAIR_VERSION to every later manual
   `compose up` or Compose silently starts an older local `latest` image.
 - Docker-published ports bypass ufw (Docker docs: packets are diverted before ufw's INPUT chain), so the installer does
-  not touch ufw. The Oracle iptables prompt is kept as it was (unverified whether it is still needed for published ports).
+  not touch ufw. Same for Oracle's iptables `INPUT ... REJECT`: tested on a real Oracle Ubuntu VM (2026-11-14), a
+  Docker-published port answers from outside with it untouched, so the installer only explains the console security
+  list (firewalld on Oracle Linux, untested, is still offered).
+- `tailscale serve`/`funnel` listen on the tailnet address:443, which makes Docker's 0.0.0.0:443 publish fail. Switching
+  a Tailscale install to public (`THINAIR_PHONE=public`) turns that handler off first (`release_tailscale_443`) and
+  restores it if public mode fails (found on the Oracle VM).
 
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
