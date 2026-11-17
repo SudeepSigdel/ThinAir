@@ -284,6 +284,20 @@ code in the repo and the agent can't read it. It is never stored in Thinair's da
 repos keep working with the same token. When the token expires, clones fail with a message
 saying so: create a new one and restart.
 
+### Several people, each with their own GitHub
+
+With several users, the server's GitHub connection is for admins (or everyone, with
+`THINAIR_GITHUB_FOR_MEMBERS=true`). A member can instead connect **their own** GitHub account:
+Settings > GitHub > **Connect my GitHub**. GitHub asks them to allow Thinair, they choose their
+repositories, and their tasks then clone and open pull requests with **their** installation. Their
+installation is theirs alone: other members, and the server's own, can't use it, and they can't use
+the server's unless allowed.
+
+For the admin, once: the app has to be public so other accounts can install it (GitHub >
+the app's settings > Advanced > **Make public**; the Connect GitHub screen links there). An app
+created before this feature needs one **Disconnect, then Connect** to enable it. See
+[docs/github.md](docs/github.md) for how ownership and verification work.
+
 ### Opening a pull request
 
 When an agent task succeeds with changes, its page offers **Create pull request** (and

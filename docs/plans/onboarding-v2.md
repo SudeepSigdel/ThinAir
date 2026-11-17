@@ -1729,3 +1729,38 @@ Deviations / decisions (please review):
 Not verified: the plan's real-device checks (a real 30-file diff one-handed on a 6-inch phone; VoiceOver and
 TalkBack; airplane mode on a phone). Chrome-level checks pass at 390 px and 320 px, in dark mode, with reduced
 motion and offline.
+
+### Phase 7: Several people, and leftovers (2026-11-17, branch `onboarding-v2/phase-7-members`)
+
+Shipped:
+- Members connect **their own** GitHub installation of the server's app: `POST /api/github/mine/start`, the open
+  callback `/api/github/callback/user`, `DELETE /api/github/mine`, `installations_for(user)`, `claim_installations`,
+  per-person token resolution (`GitHubAccess(user_id, use_server)`), `users.github_allowed`, the picker and PR path
+  for members with their own installation, Connect my GitHub UI, and the admin's note about making the app public.
+- `docs/github.md`, README and SECURITY updated; `apps/android/README.md` (what a TWA needs).
+
+[verify in build] results:
+- GitHub's docs say that with "Request user authorization during installation", GitHub redirects to the first
+  callback URL with only a `code` (no `state` or `installation_id` is documented), and the manifest page for those
+  fields returned 404. So the build does **not** rely on install-time OAuth: the member authorizes with our own
+  `state` (documented web flow), and claims are checked against `GET /user/installations` for their own token.
+  The token endpoint takes `client_id`, `client_secret`, `code` (and `redirect_uri`); the docs don't state the response
+  format, so the request sends `Accept: application/json`. User tokens are `ghu_`, 8 hours.
+  `GET /user/installations`'s token type isn't stated on its own page (the user-token page points to it).
+- Not verified against a real GitHub: the whole member round trip (needs two accounts).
+
+Decisions (please review):
+- No in-app raw terminal login for Gemini and registry agents. Phase 2's findings don't justify it: Claude Code and Codex
+  log in with a line-based command, while Gemini has no login command (its sign-in lives inside its full-screen UI), so a
+  raw terminal would need a terminal emulator in the page for one agent whose vendor is moving to another CLI.
+  They keep the terminal command shown on the Agents screen.
+- Android TWA: documented only (`apps/android/README.md`). It needs the owner's signing key and Digital Asset Links
+  hosted at `/.well-known/assetlinks.json`; the latter would be another open route, so it isn't added speculatively.
+- Let's Encrypt IP certificates: not adopted. Caddy's IP-certificate support (the `shortlived` ACME profile, issue
+  #7399, closed) exists but no release that first shipped it could be confirmed, and it would change the default
+  install; sslip.io stays the default. Revisit by testing a pinned Caddy on a real public IP.
+- Members' installations are never adopted by an admin sync of existing rows, but an admin tapping refresh between a
+  member installing and returning can record it as the server's (documented limit in docs/github.md).
+- The app's callback URL only exists for apps created from this release on; older apps show "reconnect once".
+
+Follow-ups: the owner's two-account test; revisit the leftovers above if they matter.

@@ -31,8 +31,8 @@ from thinair.config import get_settings
 from thinair.db.models import GitHubInstallation, Repo
 from thinair.db.session import session_scope
 from thinair.github import GitHubAPIError, GitHubTokenError, github_token
-from thinair.onetime import consume_state, issue_state
-from thinair.users import github_token_allowed
+from thinair.onetime import consume_state, consume_state_user, issue_state
+from thinair.users import github_allowed, github_token_allowed
 
 log = logging.getLogger(__name__)
 
@@ -94,14 +94,21 @@ def status_payload(who: Principal) -> dict:
         problem = problem or str(e)
         token_set = True
     mode = "app" if app is not None else "token" if token_set else "none"
+    mine = None
+    if who.user_id is not None:  # a member's own connection (the owner uses the server's)
+        with session_scope() as s:
+            own = [_installation_out(r) for r in ga.installations_for(s, who.user_id)]
+        mine = {"installations": own, "can_connect": bool(creds and creds.callback_ready)}
     return {
+        "mine": mine,
+        "callback_ready": bool(creds and creds.callback_ready),
         "mode": mode,
         "app": app,
         "installations": installs,
         "token_in_env": token_set,
         "problem": problem,
         "can_manage": who.is_admin,
-        "allowed": github_token_allowed(_member(who)),
+        "allowed": github_allowed(_member(who)),
         "public_url_set": bool(get_settings().public_url),
     }
 
@@ -238,7 +245,8 @@ async def list_repos(
 ) -> dict:
     """Repositories the app can see, newest push first (the picker). One GitHub call per page
     of 100, with a metadata-only key that is revoked straight after."""
-    if not github_token_allowed(_member(who)):
+    person = _member(who)
+    if not github_allowed(person):
         raise _err(403, "github_not_allowed", "Only admins can use the server's GitHub connection.")
     try:
         creds = ga.load_credentials()
@@ -252,7 +260,10 @@ async def list_repos(
             "repositories.)",
         )
     with session_scope() as s:
-        rows = ga.active_installations(s)
+        # Their own installations, plus the server's if they may use the server's connection.
+        rows = ga.installations_for(s, who.user_id) if who.user_id is not None else []
+        if github_token_allowed(person):
+            rows = [*rows, *ga.active_installations(s)]
     chosen = [r for r in rows if installation_id in (None, r.installation_id)]
     if not chosen:
         raise _err(404, "no_installation", "Thinair's app isn't installed on that account yet.")
@@ -296,3 +307,95 @@ async def disconnect_app(who: Principal = Depends(require_admin)) -> dict:
 
     delete_url = await asyncio.to_thread(_go)
     return {"delete_url": delete_url}
+
+
+# ---- members connect their own installation ------------------------------------------------
+# The member authorizes Thinair on GitHub with our own one-time `state` (so the callback knows who
+# it is for), we trade the code for a short-lived user token, and an installation is claimed only if
+# it appears in `GET /user/installations` for THAT token: a spoofed installation id claims nothing.
+# The user token is used for two read calls and dropped.
+_MEMBER_PURPOSE = "github_member"
+
+
+def _redirect_uri() -> str:
+    return get_settings().public_url.rstrip("/") + "/api/github/callback/user"  # type: ignore[union-attr]
+
+
+@router.post("/mine/start")
+def mine_start(who: Principal = Depends(require_auth)) -> dict:
+    """Begin connecting this person's own GitHub account. Returns where to send the browser."""
+    if who.user_id is None:
+        raise _err(409, "use_server_connection", "The owner connects GitHub for the whole server.")
+    try:
+        creds = ga.load_credentials()
+    except GitHubAPIError as e:
+        raise _err(409, "app_broken", e.message) from None
+    if creds is None:
+        raise _err(409, "no_app", "An admin needs to connect GitHub for the server first.")
+    if not creds.callback_ready:
+        raise _err(
+            409,
+            "members_not_ready",
+            "An admin needs to reconnect GitHub once so people can connect their own account.",
+        )
+    if not get_settings().public_url:
+        raise _err(409, "no_public_url", "THINAIR_PUBLIC_URL must be set.")
+    with session_scope() as s:
+        state = issue_state(s, _MEMBER_PURPOSE, who.user_id)
+    return {"action": ga.GitHubApp(creds).authorize_url(state, _redirect_uri())}
+
+
+@open_router.get("/callback/user")
+async def callback_user(
+    request: Request,
+    code: str | None = Query(None, max_length=200),
+    state: str | None = Query(None, max_length=200),
+    error: str | None = Query(None, max_length=60),
+) -> RedirectResponse:
+    """GitHub sends the member back here after they authorize. Nothing outbound happens unless
+    `state` is one this server issued for a signed-in person a few minutes ago."""
+    key = _client_key(request)
+    if _throttled(key):
+        raise HTTPException(429, "Too many attempts; wait a minute.")
+    with session_scope() as s:
+        live, user_id = consume_state_user(s, state, _MEMBER_PURPOSE)
+    if not live or user_id is None:
+        record_failure(key)
+        return _to_app_screen("bad_state")
+    if error or not code:
+        return _to_app_screen("denied" if error else "failed")
+
+    def work() -> tuple[str, int, str | None]:
+        creds = ga.load_credentials()
+        if creds is None or not creds.callback_ready:
+            raise GitHubAPIError(None, "GitHub is not connected for members.")
+        app = ga.GitHubApp(creds)
+        token = app.exchange_user_code(code, _redirect_uri())
+        login, verified = app.user_installations(token)
+        if not verified:
+            return "install", 0, creds.slug  # they haven't installed the app on their account yet
+        with session_scope() as s:
+            claimed = ga.claim_installations(s, user_id, login, verified, app)
+        return ("mine_connected" if claimed else "mine_taken"), len(claimed), None
+
+    try:
+        result, _n, slug = await asyncio.to_thread(work)
+    except GitHubAPIError as e:
+        log.warning("a member's GitHub sign-in did not finish (status %s)", e.status)
+        return _to_app_screen("failed")
+    if result == "install" and slug:
+        return RedirectResponse(ga.install_url(slug), status_code=303)
+    setup_state.mark("github_connected", user_id)
+    return _to_app_screen(result)
+
+
+@router.delete("/mine", status_code=204)
+def mine_disconnect(who: Principal = Depends(require_auth)) -> None:
+    """Forget this person's installations here (remove the app on GitHub to revoke it there)."""
+    if who.user_id is None:
+        raise _err(409, "use_server_connection", "Use Disconnect on the server's connection.")
+    with session_scope() as s:
+        for row in ga.installations_for(s, who.user_id):
+            row.removed_at = ga.utcnow()
+            s.add(row)
+        s.commit()

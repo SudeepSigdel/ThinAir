@@ -32,7 +32,7 @@ from thinair.jobs.service import ExecResult, JobContext
 from thinair.project.prepare import GIT_IMAGE, SANDBOX_UID, ensure_image, workspace_volume
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
-from thinair.users import github_token_allowed, job_user
+from thinair.users import github_allowed, github_token_allowed, job_user
 
 PATCH_IN_VOLUME = ".git/thinair-pr.patch"
 _SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"]
@@ -250,14 +250,19 @@ async def push_branch(
 async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult:
     assert mgr is not None
     job = ctx.job
-    access = GitHubAccess()
+    access = GitHubAccess()  # replaced below by one for the person the job belongs to
     try:
         require_credentials()  # nothing configured: stop before touching anything else
         with session_scope() as s:
             parent = s.get(Job, job.parent_job_id) if job.parent_job_id else None
             result = s.get(JobResult, parent.id) if parent else None
             repo = s.get(Repo, parent.repo_id) if parent else None
-            allowed = parent is not None and github_token_allowed(job_user(s, parent))
+            who = job_user(s, parent) if parent is not None else None
+            allowed = parent is not None and github_allowed(who)
+            # Their own installations are theirs; the server's connection only if they may use it.
+            access = GitHubAccess(
+                user_id=who.id if who is not None else None, use_server=github_token_allowed(who)
+            )
         check_pr_possible(parent, result)
         assert parent is not None and result is not None and repo is not None
         if not allowed:  # also checked at submit; the setting may have changed since

@@ -380,6 +380,8 @@ document.addEventListener("DOMContentLoaded", () => {
     r.addEventListener("change", () => chooseAgent(r.value));
   }
   $("github-connect").addEventListener("click", connectGithub);
+  $("github-mine-connect").addEventListener("click", connectMine);
+  $("github-mine-forget").addEventListener("click", forgetMine);
   $("github-disconnect").addEventListener("click", disconnectGithub);
   $("pick-search").addEventListener("input", renderPick);
   $("signin-form").addEventListener("submit", submitCode);

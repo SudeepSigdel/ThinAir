@@ -54,6 +54,9 @@ class AppCredentials:
     owner_login: str
     owner_id: int
     owner_type: str
+    # True when the app was created with a user-authorization callback URL, which members need to
+    # connect their own installation. Apps made before that are missing it (False): reconnect.
+    callback_ready: bool = False
 
     def __repr__(self) -> str:
         return "AppCredentials(***)"
@@ -64,7 +67,8 @@ class AppCredentials:
     @classmethod
     def from_json(cls, raw: bytes) -> "AppCredentials":
         data = json.loads(raw)
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        fields = {k: data[k] for k in cls.__dataclass_fields__ if k != "callback_ready"}
+        return cls(**fields, callback_ready=bool(data.get("callback_ready", False)))
 
 
 # ---- stored credentials --------------------------------------------------------------------
@@ -125,6 +129,9 @@ def build_manifest(public_url: str, name: str) -> dict[str, Any]:
         "public": False,
         "redirect_url": f"{base}/api/github/callback/app",
         "setup_url": f"{base}/api/github/callback/setup",
+        # Where GitHub sends a member back after they authorize Thinair (verifying which
+        # installations are theirs). Used only by the member flow.
+        "callback_urls": [f"{base}/api/github/callback/user"],
         "setup_on_update": True,
         "hook_attributes": {"url": f"{base}/api/github/hook", "active": False},
         "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read"},
@@ -250,6 +257,7 @@ def convert(code: str, session=None) -> AppCredentials:
             owner_login=str(owner["login"]),
             owner_id=int(owner["id"]),
             owner_type=str(owner.get("type") or "User"),
+            callback_ready=True,  # the manifest we send includes the callback URL
         )
     except (KeyError, TypeError, ValueError):
         raise GitHubAPIError(None, "GitHub's answer was missing something we need.") from None
@@ -340,6 +348,54 @@ class GitHubApp:
         repos.sort(key=lambda r: r.get("pushed_at") or "", reverse=True)
         return repos
 
+    # ---- verifying a member (the web application flow, with our own one-time `state`) ----
+    def authorize_url(self, state: str, redirect_uri: str) -> str:
+        from urllib.parse import urlencode
+
+        q = urlencode(
+            {"client_id": self.creds.client_id, "state": state, "redirect_uri": redirect_uri}
+        )
+        return f"https://github.com/login/oauth/authorize?{q}"
+
+    def exchange_user_code(self, code: str, redirect_uri: str) -> str:
+        """The authorization `code` for a short-lived user token (`ghu_...`, 8 hours). It is used
+        for two read calls and dropped: it is never stored or logged."""
+        import requests
+
+        if not _CODE_RE.match(code):
+            raise GitHubAPIError(None, "GitHub sent an unexpected code.")
+        try:
+            resp = self._s.request(
+                "POST",
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json", "User-Agent": "thinair"},
+                data={
+                    "client_id": self.creds.client_id,
+                    "client_secret": self.creds.client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            raise GitHubAPIError(None, f"Could not reach GitHub: {type(e).__name__}") from None
+        data = resp.json() if resp.content else {}
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if resp.status_code >= 400 or not isinstance(token, str) or not TOKEN_RE.match(token):
+            raise GitHubAPIError(None, "GitHub didn't accept the sign-in. Try again.")
+        return token
+
+    def user_installations(self, user_token: str) -> tuple[str, set[int]]:
+        """(the GitHub login, ids of this app's installations that user is allowed to use)."""
+        user = _call(self._s, "GET", "/user", bearer=user_token, doing="read your account")
+        data = _call(
+            self._s, "GET", "/user/installations", bearer=user_token,
+            doing="list your installations", params={"per_page": 100},
+        )  # fmt: skip
+        login = str((user or {}).get("login") or "")[:100]
+        ids = {int(i["id"]) for i in (data or {}).get("installations", []) if "id" in i}
+        return login, ids
+
     def delete_installation(self, installation_id: int) -> None:
         _call(
             self._s, "DELETE", f"/app/installations/{int(installation_id)}",
@@ -357,6 +413,68 @@ def active_installations(session: Session) -> list[GitHubInstallation]:
             )
         )
     )
+
+
+def installations_for(session: Session, user_id: str | None) -> list[GitHubInstallation]:
+    """Installations that belong to this person (a member's own); None = the server's."""
+    return list(
+        session.exec(
+            select(GitHubInstallation).where(
+                GitHubInstallation.removed_at.is_(None),  # type: ignore[union-attr]
+                GitHubInstallation.user_id.is_(None)  # type: ignore[union-attr]
+                if user_id is None
+                else GitHubInstallation.user_id == user_id,
+            )
+        )
+    )
+
+
+def has_own_installation(user_id: str | None) -> bool:
+    """Does this member have an installation of their own? (Cheap: no network.)"""
+    if user_id is None:
+        return False
+    from thinair.db.session import session_scope
+
+    try:
+        with session_scope() as s:
+            return bool(installations_for(s, user_id))
+    except Exception:  # noqa: BLE001 - no tables yet
+        return False
+
+
+def claim_installations(
+    session: Session, user_id: str, login: str, verified: set[int], app: GitHubApp
+) -> list[GitHubInstallation]:
+    """Give a member the installations GitHub says they can use, and only those.
+
+    `verified` comes from `GET /user/installations` with THEIR user token, so a spoofed
+    installation id can't claim anything. It is intersected with the app's own list (the
+    authoritative one). An installation already owned by the server or another person is never
+    taken over: ownership changes only by removing it on GitHub and installing again."""
+    remote = {int(i["id"]): i for i in app.installations()}
+    claimed: list[GitHubInstallation] = []
+    for iid in verified & set(remote):
+        info = remote[iid]
+        row = session.get(GitHubInstallation, iid)
+        if row is not None and row.removed_at is None and row.user_id != user_id:
+            continue  # someone else's (the server's or another member's)
+        account = info.get("account") or {}
+        if row is None:
+            row = GitHubInstallation(
+                installation_id=iid,
+                account_login="",
+                account_type="User",
+                repository_selection="all",
+            )
+        row.user_id = user_id
+        row.removed_at = None
+        row.account_login = str(account.get("login") or login)[:100]
+        row.account_type = str(account.get("type") or "User")
+        row.repository_selection = str(info.get("repository_selection") or "all")
+        session.add(row)
+        claimed.append(row)
+    session.commit()
+    return claimed
 
 
 def sync_installations(session: Session, app: GitHubApp) -> list[GitHubInstallation]:
