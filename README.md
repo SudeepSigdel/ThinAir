@@ -24,7 +24,7 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 
 Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
-Private GitHub repositories and opening pull requests work with a GitHub token (see below).
+Private GitHub repositories and opening pull requests work after two taps on **Connect GitHub** (see below).
 Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
 Gemini CLI. Several people can share one server, each with their own jobs and agent logins.
 
@@ -122,6 +122,44 @@ installer shows one at the end when phone access is set up. The code works once,
 and never contains your token: the phone gets a token of its own, which you can revoke on its own
 (`thinair token list`, `thinair token revoke <id>`). Or open the URL and paste your token.
 
+No camera? `thinair qr --short` also prints a short code like `K7QM-2XVD`: open the address and
+type it into "Or use a code" on the login screen. It is the same one-time pairing, valid for the
+same time; 20 wrong guesses (from anywhere) burn the short code, and the QR code keeps working.
+
+### Around the app
+
+Three tabs at the bottom: **Projects**, **Activity** (every job, newest first) and **Settings**
+(GitHub, Agents, Notifications, Setup health, **Devices**, **People**, the version and address,
+Log out). **Devices** lists the phones signed in as you with a **Revoke** for each, and **Add a
+phone** draws a pairing QR code (and the typed code) right in the app. **People** (admins) adds
+someone and shows the code for their phone.
+
+On a job, the agent's words read as prose, its tool calls are one line you tap to expand, and
+the raw log is folded away. New messages only scroll the page when you're already at the bottom;
+otherwise a "New messages" pill appears. An approval is a card with the exact command, a
+countdown to when the agent gives up waiting, and the agent's own buttons.
+
+**Review changes** opens the diff built for a phone: lines wrap (with a switch for sideways
+scrolling), each file folds, big and binary files start closed, and two buttons jump between
+changes across files. **Create pull request** sits in the bar at the bottom (or **Connect GitHub**
+when it isn't connected); the first pull request you open gets a small celebration, and only the
+first. It respects reduced-motion settings, works in dark mode and down to 320 px wide.
+
+### The guided first run
+
+The first time you open the app it shows **You're connected** and walks four steps, each with
+**Skip for now**: connect GitHub, sign in to your agent (pick Claude Code, Codex or something
+else first, and Thinair starts preparing that agent in the background), pick a repository, and try
+a first task. A **Finish setting up** card on Projects remembers where you were, and
+**Dismiss** hides it for good. Admins also get **Setup health** (at the bottom of Projects): the
+same checks as `thinair doctor`, problems first, with one-tap fixes such as **Prepare now** for
+the sandbox images. Opening it sends nothing anywhere.
+
+`thinair stats` prints when each step happened and how long it took (paired, GitHub connected,
+agent signed in, first job, first agent success, first pull request). **Those timestamps never
+leave your server**: Thinair has no telemetry and nowhere to send any. If you want to share them,
+paste the command's output into an issue yourself.
+
 Then use "Add to Home Screen". It runs like an app. Jobs keep
 running on the server when you close it, and the live log picks up where it left off when you
 come back.
@@ -146,7 +184,16 @@ changes and several projects can run at the same time. What carries over:
 
 ## Running a coding agent
 
-Each agent logs in **once, with your account**, into its own Docker volume on your server:
+Each agent logs in **once, with your account**, into its own Docker volume on your server.
+
+**From your phone (Claude Code, Codex):** open **Agents** in the app and tap **Sign in**. Open the
+sign-in page it links to, sign in with your own account, then paste the code back (Claude Code)
+or enter the code shown in the app at OpenAI's page (Codex; turn on device code login in your
+ChatGPT security settings first). Thinair runs the agent's own login inside the agent's container
+and only passes the link and the code along; the login itself stays in the agent's volume
+([docs/agents.md](docs/agents.md#in-app-login-sign-in-from-the-phone)).
+
+**From a terminal** (every agent, including Gemini CLI):
 
 ```sh
 uv run thinair auth claude        # from a checkout with Python + uv (needs a terminal)
@@ -209,7 +256,18 @@ Adding another agent takes one YAML file, no code changes. See [docs/agents.md](
 
 ## Private repositories
 
-Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
+**Connect GitHub** (header link in the app, once, as an admin): Thinair creates its own private
+GitHub App on your account, you choose which repositories it may see, and you are done. No token to
+copy, no `.env`, no restart. Adding a project then becomes tapping a row in your repository list.
+Each job gets a key for **one repository**, valid at most an hour and revoked when the step ends;
+pull requests are authored by the app's bot, so you can approve and merge them under branch
+protection, and your CI runs. Details, security notes and troubleshooting: [docs/github.md](docs/github.md).
+Needs `THINAIR_PUBLIC_URL` (the installer sets it). The app's private key is stored on the server
+in `secrets/github-app.json` (mode 0600), never in the database or environment.
+
+### Advanced: a token in `.env`
+
+Still supported, and used for repositories the app can't see. Create a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new):
 choose **Only select repositories**, pick the repos, and give it **Contents: Read-only** (nothing
 else; add write access only if you want pull requests, see below). Put it in `.env`, then restart (`docker compose up -d`):
 
@@ -226,6 +284,20 @@ code in the repo and the agent can't read it. It is never stored in Thinair's da
 repos keep working with the same token. When the token expires, clones fail with a message
 saying so: create a new one and restart.
 
+### Several people, each with their own GitHub
+
+With several users, the server's GitHub connection is for admins (or everyone, with
+`THINAIR_GITHUB_FOR_MEMBERS=true`). A member can instead connect **their own** GitHub account:
+Settings > GitHub > **Connect my GitHub**. GitHub asks them to allow Thinair, they choose their
+repositories, and their tasks then clone and open pull requests with **their** installation. Their
+installation is theirs alone: other members, and the server's own, can't use it, and they can't use
+the server's unless allowed.
+
+For the admin, once: the app has to be public so other accounts can install it (GitHub >
+the app's settings > Advanced > **Make public**; the Connect GitHub screen links there). An app
+created before this feature needs one **Disconnect, then Connect** to enable it. See
+[docs/github.md](docs/github.md) for how ownership and verification work.
+
 ### Opening a pull request
 
 When an agent task succeeds with changes, its page offers **Create pull request** (and
@@ -236,8 +308,8 @@ When an agent task succeeds with changes, its page offers **Create pull request*
 3. pushes the branch `thinair/<job-id>` (only Thinair writes to these branches), and
 4. opens the pull request against the branch you ran the task on (or the default branch).
 
-This needs the token to have **Contents: Read and write** and **Pull requests: Read and write**
-on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
+With the app, nothing to set up. With a token it needs **Contents: Read and write** and
+**Pull requests: Read and write** on the repository. Commits are authored as `THINAIR_GIT_AUTHOR_NAME` /
 `THINAIR_GIT_AUTHOR_EMAIL` (use your GitHub noreply address to have them linked to your
 account). Pushing still never happens inside the agent's sandbox: the agent never sees the
 token. Changes larger than 5 MB can't be turned into a PR from Thinair.
@@ -289,9 +361,38 @@ By default (`THINAIR_RUNNER_PLACEMENT=auto`) a profile job goes to a runner when
 runs on the server otherwise. Runners only ever get profile jobs. They never receive the
 server's GitHub token, agent logins or API keys. See [docs/runners.md](docs/runners.md).
 
-## Notifications (Telegram)
+## Notifications
 
-Get a message when a job finishes, with a link back to it:
+### On your phone, with no account (Web Push)
+
+When a job finishes, or an agent conversation needs your approval or your turn, Thinair sends a
+notification to your phone. Open the app and tap **Turn on** in the "Get told when it's done"
+banner (it shows on Projects and on a running job). Tap it, allow notifications, done: **no bot,
+no token, no `.env`**.
+
+- **Android and desktop (Chrome, Edge, Firefox):** the browser asks for permission. The banner
+  also offers **Install the app** when the browser supports it.
+- **iPhone and iPad (iOS 16.4 or newer):** Apple only delivers notifications to apps on the Home
+  Screen. Tap Share, **Add to Home Screen**, open Thinair from there and tap **Turn on**. Signing
+  in again after adding it may be needed (the Home Screen app has its own storage): `thinair qr
+  --short` gives a code to type.
+- **Send a test** checks it works. **Turn off** removes the phone. Revoking a phone's token
+  (`thinair token revoke`) or disabling a user also stops their notifications.
+- Each person gets the notifications for **their own** jobs, on their own devices.
+- **Share a link into the app (Android):** share a `https://github.com/owner/repo` link to Thinair
+  and the add-project form opens with it filled in.
+
+What is sent: the repo name, job kind and outcome, the first line of the task, and a short error
+or result. Never logs, diffs or summaries. The message is encrypted end to end to your phone
+(RFC 8291), so Google, Mozilla, Apple or Microsoft (whichever runs your browser's push service)
+only sees that a message of some size was sent to your device. Thinair only sends; nothing polls,
+so idle cost stays zero. The server's push key (`secrets/vapid.json`, mode 0600) is created on first
+use; `THINAIR_WEB_PUSH=false` turns the feature off and never creates it. Thinair will only send
+to the push services' own addresses (a crafted subscription can't make it call anything else).
+
+### Telegram (an alternative)
+
+Prefer Telegram? Get a message when a job finishes, with a link back to it:
 
 1. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token.
 2. Send your new bot any message, then open
@@ -358,7 +459,9 @@ thinair user add|list|disable    manage users (see "Several users")
 thinair runner add|list|disable  manage remote runners (on the server)
 thinair runner start             run profile jobs for a server (on the runner machine)
 thinair doctor                   check the install and print how to fix problems
-thinair qr [--user NAME]         QR code that signs a phone in (one-time, 10 minutes)
+thinair qr [--user NAME] [--short]  QR code that signs a phone in (one-time; --short adds a typed code)
+thinair stats                    when each first-run step happened (local only)
+thinair github status|disconnect the GitHub connection (see "Private repositories")
 thinair user limit NAME N        max unfinished jobs for a member (0 = none, or `default`)
 thinair images                   prepare the sandbox images now (else the first job does it)
 thinair cache list|clear         per-project dependency caches (package downloads)
@@ -389,8 +492,10 @@ them.
   `THINAIR_TRUSTED_PROXIES` (loopback and private ranges, i.e. Caddy), and Caddy ignores that
   header from clients. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
-- **GitHub token (optional):** used only by clone/push containers and Thinair's own GitHub API
-  calls, never by install, test or agent runs, and never stored or logged. See [Private repositories](#private-repositories).
+- **GitHub access (optional):** the GitHub App's keys (one repository, at most an hour, revoked after
+  each step) or a token reach only clone/push containers and Thinair's own GitHub API calls, never
+  install, test or agent runs, and are never logged. The app's private key is a file in the data
+  volume, never the database. See [Private repositories](#private-repositories).
 - **Outbound allowlist for agents:** Claude Code runs can reach only `api.anthropic.com`,
   `claude.ai` and `platform.claude.com`. The agent's container sits on a private network whose
   only way out is a per-run proxy that tunnels HTTPS to allowlisted host names and refuses the
@@ -407,6 +512,12 @@ named `thinair-auth-<agent>` that is mounted only into that agent's own sandboxe
 never reads it, never copies it, and never sends it anywhere. If you use a token from
 `claude setup-token` instead, it sits in your server's `.env` and is passed only into that agent's
 container, masked in every log.
+
+**What passes through Thinair when I sign in from the phone?** Only the sign-in link (out to the
+app) and a one-time code: the code Claude's page gives you (typed into Claude Code's prompt), or
+the code Codex shows (which you type at OpenAI). Claude's link uses PKCE, so that code is useless
+without a secret that never leaves Claude Code's process inside the container. Neither is stored
+or logged, and nobody else on the server (admins included) can see your sign-in.
 
 **Can I share my Thinair server with friends so they use my subscription?** No. You can share
 the *server* (see "Several users"), but each person logs in to the agents with their own account,
@@ -466,7 +577,10 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set
   `THINAIR_PIP_INDEX_URL` / `THINAIR_NPM_REGISTRY` in `.env` to a mirror you can reach.
 - **"Could not detect the project type"**: add a `thinair.yaml` with `stack`, `install` and `test`.
-- **"Claude Code is not logged in"**: run `thinair auth claude` (see above).
+- **"Claude Code is not signed in"**: tap **Sign in to the agent** on the failed job (or
+  Agents > Sign in), then **Run again**. From a terminal: `thinair auth claude` (see above).
+- **Codex sign-in fails right away**: turn on device code login in your ChatGPT security
+  settings, then start the sign-in again.
 - **The 0.25 CPU runs time out**: that's a real result (too slow at that size). Raise
   `timeouts.test_s` if you want them to finish anyway.
 

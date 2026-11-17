@@ -1548,3 +1548,219 @@ Real Oracle VM test (2026-11-14, Ubuntu on Ampere A1, phase-1 image built on the
 - Bug found and fixed: `THINAIR_PHONE=public` on a Tailscale install failed because `tailscale
   serve` holds the tailnet address:443, so Docker can't publish 0.0.0.0:443. The installer now
   turns that handler off first and restores it if public mode fails.
+
+### Phase 2: Sign in to the agent from the phone (2026-11-14, branch `onboarding-v2/phase-2-agent-login`)
+
+Shipped:
+- `SandboxSpec.tty` + `SandboxManager.open_terminal` / `Terminal` (attach before start; reads in a
+  thread because Docker Desktop's Windows named pipe ignores socket timeouts).
+- `agents/login.py`: `FlowMachine` (pure), `LoginSession`, `LoginHub`, `DockerLoginBackend`.
+  `login_flow` on `claude` and `codex` (Claude Code (ACP) signs in through Claude Code's flow).
+- `api/login_api.py`: `POST /api/agents/{id}/login`, `GET /api/agent-logins/{sid}` (+ `/events`
+  SSE), `POST .../input`, `DELETE`, `POST /api/agents/{id}/login/check`; `GET /api/agents` gains
+  `login: {in_app, state}`. All behind `require_auth`; no new open route.
+- UI: header link **Agents** (`#/agents`) and the O3 sign-in screen (`#/agent/<id>/login`);
+  a job that failed with `agent_not_authenticated` links to it. Doctor's fix text and the agents'
+  hints point to the Agents screen.
+
+[verify in build] results:
+- `claude auth login` in a PTY (2.1.311): line-based (no `pyte`), prints `visit: <link>` (OSC 8
+  + coloured copy) and `Paste code here if prompted > `. The link host is **`claude.com`**
+  (`/cai/oauth/authorize`), not `claude.ai` as planned; `code_challenge` + `S256` present. The
+  pinned binary exchanges the code at `platform.claude.com/v1/oauth/token` and calls
+  `api.anthropic.com` (strings in the binary), both already on the egress allowlist.
+- `codex login --device-auth` (0.166.0): `https://auth.openai.com/codex/device` + a code like
+  `ABCD-EFGH1` ("expires in 15 minutes"); contacts auth.openai.com; exits 0 when saved.
+- TTY attach through tecnativa/docker-socket-proxy: works with the existing permissions (real
+  server on the Oracle ARM VM: both CLIs reached the link, cancel removed the containers).
+
+Deviations from the plan:
+- No `success` regex: the exit code plus `check_command` decide (more reliable than text).
+- States add `cancelled`; `GET /api/agent-logins/{sid}` added (the screen renders from GET or SSE,
+  same payload). A server-wide cap of 3 sessions (429 `too_many_logins`) on top of one per user.
+- The O3 screen lives at `#/agent/<id>/login` behind a new Agents screen, because Settings and
+  the setup flow arrive in phases 4 and 6; they will link to the same route.
+- `login.state` comes from sign-ins and explicit checks only; a job failing with
+  `agent_not_authenticated` doesn't update it yet (follow-up).
+
+Follow-ups:
+- Owner's manual test: complete a real Claude Code and Codex sign-in from the phone, then run a
+  task (below). Not possible in automation (never a real account).
+- Phase 4: setup step 2 reuses `#/agent/<id>/login`; mark the job-failure state in `known`.
+
+### Phase 3: Connect GitHub (2026-11-17, branch `onboarding-v2/phase-3-github`)
+
+Shipped:
+- `secrets.py`, `onetime.py`, `github_app.py` (manifest, conversion, RS256 JWT, installation sync, token
+  mint/revoke, repo listing, disconnect), `GitHubAccess`/`Credential`/`commit_identity` in `github.py`,
+  `api/github_api.py` (status, start, two open callbacks, sync, picker list, disconnect), migration 0010
+  (`GitHubInstallation`, `OneTimeState`, `Repo.private`), `cryptography` dependency.
+- Rewiring: `prepare._load_source` (clone key, revoked in `finally`, app-specific hints), `jobs/pr.py` (separate
+  push and PR keys, workflows-refusal message, `require_credentials()`), `submit_pr`, `RepoIn/RepoOut.private`.
+- UI: header link GitHub (`#/setup/github`, O2), picker (`#/setup/project`, O4), home shortcut. CSP
+  `form-action` + `https://github.com`. Doctor `GitHub App` check, `thinair github status|disconnect`,
+  `THINAIR_GITHUB_FOR_MEMBERS`, `docs/github.md`, README/SECURITY/.env.example rewritten around Connect.
+- Defence in depth: `VolumeMount` refuses the server's data volume.
+
+[verify in build] results:
+- `cryptography` has arm64 manylinux wheels for CPython 3.12 (`pip download --platform manylinux2014_aarch64`:
+  cryptography 50.0.2 abi3) and installs on x86; no compiler needed in the server image.
+- GitHub's setup-URL docs name only `installation_id` (and warn it can be spoofed); they do not say whether
+  `state` is echoed back. The design doesn't depend on it (live state skips the cooldown; otherwise the route
+  re-reads installations, rate limited).
+- Create-a-PR needs Pull requests: write; GET repo needs Metadata: read (GitHub's permissions table). The PR key asks
+  for both. Not tested against a real GitHub (needs the owner's account).
+- Existing tests unchanged: one required `pr_executor` to fail on missing credentials before touching the database,
+  so `require_credentials()` runs first.
+
+Deviations / decisions (choose-the-best-option, please review):
+- `prepare_workspace` keeps its `github_auth` parameter (bool or `GitHubAccess`) instead of a new `github` one:
+  `test_users.py` asserts the executors pass a bool, and installations are server-level until phase 7 so a bool
+  carries all the information. True now means "may use the server's GitHub connection (app > PAT)".
+- Early PR check (`submit_pr`) is "any credential configured", not "this repo is covered": coverage needs a GitHub call,
+  so it is reported in the job instead.
+- App errors (GitHub down, repo not covered) fall back to PAT/anonymous rather than failing, so public clones keep
+  working during an outage; the clone-failure hint carries the reason.
+- The setup callback is open and has no reliable state, so it is per-IP rate limited (20/min) and cooled down (5 s)
+  rather than state-gated.
+- No Settings screen exists yet (phase 6) and phase 1 added no Welcome/checklist, so Connect GitHub and the picker
+  are reached from a header link and the home screen, at the plan's `#/setup/*` routes.
+- `GET /api/github/repos` is available to anyone allowed to use the server's connection (admins, or members with the
+  setting); manage actions are admin-only.
+
+Follow-ups: owner's real-GitHub round trip (below); phase 4 wires O2/O4 into the guided flow; phase 7 members'
+own installations.
+
+### Phase 4: The first run, end to end (2026-11-17, branch `onboarding-v2/phase-4-first-run`)
+
+Shipped:
+- `setup_state.py` + migration 0011 (`SetupEvent`, `PairingCode.short_hash/failures`), `api/setup_api.py`
+  (`/api/meta`, `/api/setup`, `/api/health`, `/api/health/fix/images`), funnel hooks, `thinair stats`.
+- The pieces phase 1 deferred: Welcome screen, setup state, `/api/meta`, funnel events and short pairing codes
+  (`thinair qr --short`, "Or use a code" on the login screen, the installer prints one).
+- UI: Welcome (O1) with agent choice, one resumable flow O2-O5 with a progress bar and Skip on every step, "Finish
+  setting up" card, starter tasks, empty states for Projects and the project page, Setup health (C8) with one-tap
+  actions, first-run timing line.
+
+Deviations / decisions (please review):
+- `SetupEvent` uses `user_key` ("owner" or the user id) instead of a nullable `user_id`, so the unique key really is
+  one row per person (NULLs are not unique in SQL).
+- The agent step is `done` when the preferred agent's login is known to be good in this server's memory (a sign-in
+  or check since the last start) OR an agent job of that agent already succeeded for that person. After a restart
+  with no such job it shows "isn't signed in yet" until they tap Check or sign in again: running a container on every
+  setup read would break "idle cost near zero".
+- Opening Setup health uses `run_checks(online=False)`: no request leaves the machine. The GitHub token check and
+  version check stay in `thinair doctor` only. Members don't get the screen (403); they see their agent state on Agents.
+- No Settings screen yet (phase 6): Setup health is linked from the bottom of Projects (admins) at its planned route
+  `#/settings/health`. Notifications aren't a setup step until phase 5.
+- Short codes: a wrong short code can't be attributed to a row, so it counts against every live short code (20 burns
+  them). An attacker can therefore burn the short form (not the QR) with 20 guesses; the per-address throttle slows them.
+- `/api/meta` lists only `github_app`, `agent_login`, `setup` as features until push exists.
+
+[verify in build]: every first-run step runs in the browser against fake executors, a fake GitHub and a fake login
+agent (18 checks, light + dark). Not done: the plan's stopwatch run on a fresh VM with someone who hasn't seen the
+product (needs a person); `thinair stats` is what records it.
+
+Follow-ups: the owner's stopwatch run (replace the estimates in section 1 with `thinair stats` numbers); phase 5 adds
+the notifications step.
+
+### Phase 5: Notifications and install (2026-11-17, branch `onboarding-v2/phase-5-push`)
+
+Shipped:
+- `push.py` (VAPID, RFC 8291 encryption, allowlisted sender), migration 0012 (`PushSubscription`), `api/push_api.py`,
+  `WebPushNotifier` + shared `job_summary()`, the attention hook with a 60 s debounce, `THINAIR_WEB_PUSH`.
+- `sw.js` `push` / `notificationclick`, manifest `id` and `share_target`, the O6 banner (Projects and running job),
+  iOS Add-to-Home-Screen steps, Android install button, share-a-GitHub-link handling.
+- Doctor `push` check; README "Notifications" rewritten (Web Push first, Telegram kept as the alternative).
+
+[verify in build] results:
+- RFC 8291: the encryption reproduces the RFC's Appendix A message byte for byte (values read from the RFC text).
+- `sw.js` `push` handler reads the same JSON the server sends for Declarative Web Push and calls `showNotification`;
+  checked in a real Edge with the push manager stubbed (banner, subscribe, test, iOS sheet, install, share). Delivery
+  through a real push service, iOS 16.4+/18.4+ behaviour and the iOS cookie carry-over are NOT verified: they need
+  real phones (see the pull request's manual steps).
+
+Deviations / decisions (please review):
+- `JobService` keeps Telegram in `notifier` and takes Web Push as `push_notifier`: an existing test requires
+  `_notifier is None` when Telegram settings are malformed, so the plan's "compose the notifiers" is done inside the
+  service instead of in `app.py`.
+- The banner appears on Projects and on a running job (there is no Settings screen until phase 6); "Not now" is
+  remembered per browser.
+- VAPID `sub` is the server's https `THINAIR_PUBLIC_URL`, else `mailto:thinair@example.com` (the spec needs one of the
+  two; nothing personal is sent).
+- A test notification goes to all of the caller's own devices; at most 20 devices per person, one per login.
+- Declarative Web Push `navigate` is an absolute https URL when `THINAIR_PUBLIC_URL` is https, else a path.
+
+Follow-ups: the owner's real-phone tests (below); phase 6 moves the banner into Settings.
+
+### Phase 6: The core loop, redesigned (2026-11-17, branch `onboarding-v2/phase-6-core-loop`)
+
+Shipped:
+- Design tokens with a WCAG AA test; hairline/dot-and-word styling; icon sprite and `icon()`; redrawn brand icon with a
+  stdlib generator (`scripts/make_icons.py`); skeleton rows, offline banner, haptics (Android), reduced motion.
+- Bottom tab bar (Projects, Activity, Settings), Activity, Settings with GitHub / Agents / Notifications / Setup health /
+  Devices / People / version / address / Log out; Devices (list, revoke, "Add a phone" QR drawn as an SVG path by the
+  server); People (list, disable, add + pairing code).
+- Composer: "Measure resources instead" replaces the tabs, "Start with <agent>", draft kept per project, inline
+  "isn't signed in. Sign in" row.
+- Live job: prose + one-line tool rows that expand, raw log folded for agent jobs, queued/starting/reconnecting states,
+  follow-the-bottom with a "New messages" pill, approval card (alertdialog, countdown, collapses when answered).
+- Diff review (`#/job/<id>/changes`): `diff.js` parser (Node-tested: CRLF, binary, rename, no-newline, 5,000 lines),
+  wrapped lines with a hanging indent and a sideways-scroll switch, per-file folds, large/binary start closed, jump
+  between changes, sticky Create pull request / Patch bar. Result card with Review changes; "Pull request opened" card
+  with the one-time celebration.
+- `app.js` split into seven plain scripts (no build step).
+
+Deviations / decisions (please review):
+- Two plan colours were darkened to pass AA on the tinted diff backgrounds: `--ok` #15803d -> #137537, `--danger`
+  #dc2626 -> #c81e1e. Added `--danger-ink` (white on light, near-black on dark): dark `--danger` with white text was
+  2.8:1.
+- Notifications has no screen of its own: its Settings row re-opens the banner (with test / turn off).
+- "Always allow commands like this" on the approval card is not built: the buttons are the agent's own options, as
+  before.
+- The first-PR celebration is remembered per browser (localStorage), not per user on the server.
+- Optimistic UI is limited to what already was (chat messages); skip-step and approvals still wait for the server.
+- Android share target opens the add-project form with the link filled in (it doesn't add the repository by itself).
+- The old header links (GitHub, Agents, Log out) moved into Settings; the phase 2 and 3 smoke scripts that clicked them
+  were updated or are stale (not in CI).
+- The "added by an admin" person gets a pairing code, but the "first" token `POST /api/users` creates stays unused
+  (revoke it from the CLI if you care).
+
+Not verified: the plan's real-device checks (a real 30-file diff one-handed on a 6-inch phone; VoiceOver and
+TalkBack; airplane mode on a phone). Chrome-level checks pass at 390 px and 320 px, in dark mode, with reduced
+motion and offline.
+
+### Phase 7: Several people, and leftovers (2026-11-17, branch `onboarding-v2/phase-7-members`)
+
+Shipped:
+- Members connect **their own** GitHub installation of the server's app: `POST /api/github/mine/start`, the open
+  callback `/api/github/callback/user`, `DELETE /api/github/mine`, `installations_for(user)`, `claim_installations`,
+  per-person token resolution (`GitHubAccess(user_id, use_server)`), `users.github_allowed`, the picker and PR path
+  for members with their own installation, Connect my GitHub UI, and the admin's note about making the app public.
+- `docs/github.md`, README and SECURITY updated; `apps/android/README.md` (what a TWA needs).
+
+[verify in build] results:
+- GitHub's docs say that with "Request user authorization during installation", GitHub redirects to the first
+  callback URL with only a `code` (no `state` or `installation_id` is documented), and the manifest page for those
+  fields returned 404. So the build does **not** rely on install-time OAuth: the member authorizes with our own
+  `state` (documented web flow), and claims are checked against `GET /user/installations` for their own token.
+  The token endpoint takes `client_id`, `client_secret`, `code` (and `redirect_uri`); the docs don't state the response
+  format, so the request sends `Accept: application/json`. User tokens are `ghu_`, 8 hours.
+  `GET /user/installations`'s token type isn't stated on its own page (the user-token page points to it).
+- Not verified against a real GitHub: the whole member round trip (needs two accounts).
+
+Decisions (please review):
+- No in-app raw terminal login for Gemini and registry agents. Phase 2's findings don't justify it: Claude Code and Codex
+  log in with a line-based command, while Gemini has no login command (its sign-in lives inside its full-screen UI), so a
+  raw terminal would need a terminal emulator in the page for one agent whose vendor is moving to another CLI.
+  They keep the terminal command shown on the Agents screen.
+- Android TWA: documented only (`apps/android/README.md`). It needs the owner's signing key and Digital Asset Links
+  hosted at `/.well-known/assetlinks.json`; the latter would be another open route, so it isn't added speculatively.
+- Let's Encrypt IP certificates: not adopted. Caddy's IP-certificate support (the `shortlived` ACME profile, issue
+  #7399, closed) exists but no release that first shipped it could be confirmed, and it would change the default
+  install; sslip.io stays the default. Revisit by testing a pinned Caddy on a real public IP.
+- Members' installations are never adopted by an admin sync of existing rows, but an admin tapping refresh between a
+  member installing and returning can record it as the server's (documented limit in docs/github.md).
+- The app's callback URL only exists for apps created from this release on; older apps show "reconnect once".
+
+Follow-ups: the owner's two-account test; revisit the leftovers above if they matter.

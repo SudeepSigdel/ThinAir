@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Whether jobs of *member* users (not admins) may use that token: private clones and pull
     # requests as the token's GitHub account. Off by default (members: public repositories only).
     github_token_for_members: bool = False
+    # The clearer name for the same switch (the server's GitHub connection is no longer only a
+    # token): either one enables it for members.
+    github_for_members: bool = False
     # Commit author for pull requests opened from agent jobs (use your GitHub noreply email
     # to have commits linked to your account).
     git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")
@@ -93,6 +96,9 @@ class Settings(BaseSettings):
     # Optional Telegram notifications when a job finishes (outbound only; see thinair/notify.py).
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
+    # Web Push notifications (no account needed; see thinair/push.py). False hides the feature and
+    # never generates the VAPID key.
+    web_push: bool = True
     # The address you open Thinair at (e.g. https://thinair.example.com), for links in messages.
     public_url: str | None = Field(default=None, pattern=r"^(https?://[^\s]+)?$")
 

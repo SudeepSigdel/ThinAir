@@ -1,7 +1,8 @@
 """`thinair doctor`: check a Thinair install and say how to fix what's wrong.
 
-Every check is read-only. Network requests (all skipped with `--offline`): with a GitHub token
-configured, `GET https://api.github.com/rate_limit` with that token (to GitHub only); an
+Every check is read-only. The GitHub App check reads only local files and the database. Network
+requests (all skipped with `--offline`): with a GitHub token configured,
+`GET https://api.github.com/rate_limit` with that token (to GitHub only); an
 anonymous check for a newer release; with an sslip.io address, one anonymous request for this
 machine's public IP (to https://ipv4.icanhazip.com); and an HTTPS request to Thinair's own
 address. Nothing is sent to Telegram, and no agent is started.
@@ -25,6 +26,10 @@ class Check:
     name: str
     detail: str
     fix: str = ""
+    id: str = ""
+    # A one-tap fix for the app's health screen: (kind, target, label) with kind "route"
+    # (a #/ address), "post" (an /api/ route) or "copy". `thinair doctor` itself ignores it.
+    action: tuple[str, str, str] | None = None
 
 
 def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
@@ -59,7 +64,9 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
     guard("phone access", _phone)
     guard("public address", lambda: _public_address(online))
     guard("https", lambda: _https(online))
+    guard("github app", _github_app)
     guard("github", lambda: _github(online))
+    guard("push", _push)
     guard("notifications", _telegram)
     guard("runners", _runners)
     guard("version", lambda: _version(online))
@@ -266,6 +273,8 @@ def _images(mgr) -> list[Check]:  # noqa: ANN001
             "Sandbox images",
             f"not prepared yet: {', '.join(missing)}",
             "The first job prepares them (a minute or two). To do it now: `thinair images`.",
+            id="images",
+            action=("post", "/api/health/fix/images", "Prepare now"),
         )
     ]
 
@@ -303,7 +312,11 @@ def _agents(mgr) -> list[Check]:  # noqa: ANN001
                 "warn",
                 "Agent logins",
                 "no agent has been logged in yet (profiles work without one)",
-                "For agent tasks: `thinair auth claude --print-command` (or codex, gemini).",
+                "For agent tasks: sign Claude Code or Codex in on the Agents screen of the app"
+                " (no terminal needed), or run `thinair auth claude --print-command`"
+                " (or codex, gemini).",
+                id="agents",
+                action=("route", "#/agents", "Sign in an agent"),
             )
         )
     return out
@@ -377,6 +390,55 @@ def _https(online: bool) -> list[Check]:
     return [Check("warn", "HTTPS", res.reason, fix.strip())]
 
 
+def _github_app() -> Check:
+    """The GitHub App's key file and installations. Local only: no request leaves the machine."""
+    from thinair.github import GitHubAPIError
+    from thinair.github_app import SECRET_NAME, active_installations, load_credentials
+    from thinair.secrets import secret_mode_problem
+
+    try:
+        creds = load_credentials()
+    except GitHubAPIError as e:
+        return Check("fail", "GitHub App", e.message, "Reconnect GitHub in the app.")
+    if creds is None:
+        return Check(
+            "ok",
+            "GitHub App",
+            "not connected (a token in .env or public repositories still work)",
+            "Connect GitHub in the app for short-lived, per-repository keys.",
+            id="github",
+            action=("route", "#/setup/github", "Connect GitHub"),
+        )
+    problem = secret_mode_problem(SECRET_NAME)
+    if problem:
+        return Check(
+            "fail",
+            "GitHub App",
+            problem,
+            "Run: chmod 600 <data dir>/secrets/github-app.json (or reconnect GitHub in the app).",
+        )
+    count = None
+    try:
+        if not _db_missing():
+            from thinair.db.session import session_scope
+
+            with session_scope() as s:
+                count = len(active_installations(s))
+    except Exception:  # no tables yet
+        count = None
+    if count == 0:
+        return Check(
+            "warn",
+            "GitHub App",
+            f"{creds.slug} exists but is not installed on any repository",
+            "Open Connect GitHub in the app and choose repositories.",
+        )
+    detail = f"{creds.slug} (owner {creds.owner_login})"
+    if count is not None:
+        detail += f", {count} installation{'s' if count != 1 else ''}"
+    return Check("ok", "GitHub App", detail)
+
+
 def _github(online: bool) -> Check:
     from thinair.github import GitHubTokenError, github_token
 
@@ -408,6 +470,44 @@ def _github(online: bool) -> Check:
     if r.ok:
         return Check("ok", "GitHub token", "set and accepted by GitHub")
     return Check("warn", "GitHub token", f"set; GitHub answered HTTP {r.status_code}")
+
+
+def _push() -> Check:
+    """Web Push: on or off, the key file's mode, how many phones are subscribed. Local only."""
+    from thinair.secrets import secret_mode_problem
+
+    if not get_settings().web_push:
+        return Check("ok", "Push notifications", "off (THINAIR_WEB_PUSH=false)")
+    problem = secret_mode_problem("vapid.json")
+    if problem:
+        return Check(
+            "fail",
+            "Push notifications",
+            problem,
+            "Run: chmod 600 <data dir>/secrets/vapid.json",
+            id="push",
+        )
+    count = None
+    try:
+        if not _db_missing():
+            from sqlmodel import func, select
+
+            from thinair.db.models import PushSubscription
+            from thinair.db.session import session_scope
+
+            with session_scope() as s:
+                count = s.exec(select(func.count()).select_from(PushSubscription)).one()
+    except Exception:  # no tables yet
+        count = None
+    if not count:
+        return Check(
+            "ok",
+            "Push notifications",
+            "on; no phone has turned them on yet",
+            "Open the app on your phone and tap Turn on in the notifications banner.",
+            id="push",
+        )
+    return Check("ok", "Push notifications", f"on; {count} device{'s' if count != 1 else ''}")
 
 
 def _telegram() -> Check:

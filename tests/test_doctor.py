@@ -158,3 +158,57 @@ def test_cli_exit_code(monkeypatch, failing) -> None:
     res = CliRunner().invoke(app, ["doctor", "--offline"])
     assert res.exit_code == (1 if failing else 0), res.output
     assert "X: y" in res.output
+
+
+# ---- GitHub App check (local only: files and the database, no network) -------------------------
+def test_github_app_check_states(monkeypatch) -> None:
+    import os
+
+    from thinair import github_app as ga
+    from thinair.secrets import write_secret
+
+    assert (
+        doctor._github_app().status == "ok"
+    )  # not connected is fine: a token or public repos work
+    assert "not connected" in doctor._github_app().detail
+
+    write_secret("github-app.json", b"{broken")
+    c = doctor._github_app()
+    assert c.status == "fail" and "damaged" in c.detail and "Reconnect" in c.fix
+
+    creds = ga.AppCredentials(
+        app_id=1,
+        slug="thinair-3fa9c1",
+        client_id="Iv1.x",
+        client_secret="s",
+        pem="not used here",
+        html_url="https://github.com/apps/thinair-3fa9c1",
+        owner_login="octocat",
+        owner_id=5,
+        owner_type="User",
+    )
+    ga.save_credentials(creds)
+    c = doctor._github_app()
+    assert c.status == "ok" and "thinair-3fa9c1" in c.detail and "BEGIN" not in c.detail
+    if os.name == "posix":
+        (get_settings().data_dir / "secrets" / "github-app.json").chmod(0o644)
+        c = doctor._github_app()
+        assert c.status == "fail" and "readable by other" in c.detail and "chmod 600" in c.fix
+
+
+def test_github_app_check_makes_no_network_call(monkeypatch) -> None:
+    import requests
+
+    from thinair import github_app as ga
+
+    def boom(*a, **k):
+        raise AssertionError("the GitHub App check must not use the network")
+
+    monkeypatch.setattr(requests, "get", boom)
+    monkeypatch.setattr(requests.Session, "request", boom)
+    ga.save_credentials(
+        ga.AppCredentials(
+            1, "thinair-aaaaaa", "i", "s", "p", "https://github.com/apps/x", "o", 1, "User"
+        )
+    )
+    assert doctor._github_app().status == "ok"

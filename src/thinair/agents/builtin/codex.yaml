@@ -34,8 +34,18 @@ auth:
     Codex prints a link and a one-time code. Open the link on any device, sign in with your own
     account and enter the code. The command ends by itself when the login is saved.
   hint: >-
-    Codex is not logged in for this Thinair server. Run `thinair auth codex` on the server (or set
-    CODEX_API_KEY).
+    Codex is not signed in for this Thinair server. Sign it in on the Agents screen of the
+    Thinair app, or run `thinair auth codex` on the server (or set CODEX_API_KEY).
+  # Sign-in from the phone. Checked in a terminal with 0.166.0 (docs/agents.md "In-app login"):
+  # it prints the link https://auth.openai.com/codex/device and a one-time code like ABCD-EFGH1
+  # ("expires in 15 minutes"), polls OpenAI itself and exits 0 once the login is saved.
+  login_flow:
+    command: [codex, login, --device-auth]
+    url: 'https://auth\.openai\.com/\S+'
+    url_hosts: [auth.openai.com]
+    code_out: 'one-time code[^\n]*\n\s*([A-Z0-9]{4,}-[A-Z0-9]{4,})'
+    help: >-
+      First time? Turn on device code login in your ChatGPT security settings.
 auth_error_patterns:
   - not logged in
   - "401 unauthorized"

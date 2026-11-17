@@ -73,6 +73,63 @@ class PairingCode(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime
     used_at: datetime | None = None
+    # The same code in the short form `XXXX-XXXX` (SHA-256 of its normalised spelling), for
+    # typing when the phone has no camera. `failures` counts wrong short codes seen while this
+    # row was live (all addresses together): at 20 the short code is burned.
+    short_hash: str | None = Field(default=None, index=True)
+    failures: int = 0
+
+
+class GitHubInstallation(SQLModel, table=True):
+    """An installation of this server's GitHub App on an account. Not secret: the app id, slug
+    and private key live in `secrets/github-app.json`, never here. `user_id` None = the server's
+    (the only kind until members connect their own)."""
+
+    installation_id: int = Field(primary_key=True)
+    account_login: str
+    account_type: str  # "User" | "Organization"
+    repository_selection: str  # "all" | "selected"
+    user_id: str | None = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=utcnow)
+    removed_at: datetime | None = None
+
+
+class OneTimeState(SQLModel, table=True):
+    """A single-use `state` value for the GitHub redirects (only its SHA-256 is stored). The
+    open callback routes act only when they get a live one."""
+
+    hash: str = Field(primary_key=True)
+    purpose: str
+    user_id: str | None = Field(default=None, foreign_key="user.id")
+    expires_at: datetime
+    used_at: datetime | None = None
+
+
+class SetupEvent(SQLModel, table=True):
+    """First-run progress, local only: funnel timestamps (`paired`, `first_job`, ...), skipped
+    steps (`skip:<step>`), `dismissed`, and `preferred_agent` (in `value`). One row per
+    (user, name); the owner's `user_key` is "owner". Nothing here ever leaves the server."""
+
+    user_key: str = Field(primary_key=True)
+    name: str = Field(primary_key=True)
+    at: datetime = Field(default_factory=utcnow)
+    value: str | None = None
+
+
+class PushSubscription(SQLModel, table=True):
+    """One phone's Web Push subscription. Tied to the API token that created it: revoking the
+    token (or disabling the user) deletes it, so a revoked phone stops getting notifications.
+    Also deleted when the push service says it is gone, or after 5 failures in a row."""
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    user_id: str | None = Field(default=None, foreign_key="user.id")  # None = the owner
+    token_id: str = Field(foreign_key="apitoken.id", index=True)
+    endpoint: str = Field(unique=True)
+    p256dh: str
+    auth: str
+    created_at: datetime = Field(default_factory=utcnow)
+    last_ok_at: datetime | None = None
+    failures: int = 0
 
 
 class Runner(SQLModel, table=True):
@@ -97,6 +154,8 @@ class Repo(SQLModel, table=True):
     # Project defaults, used when a new job leaves them out (set by admins on the project page).
     default_agent_id: str | None = None
     default_ref: str | None = None
+    # Filled when the repository was picked from GitHub (the picker knows); None = unknown.
+    private: bool | None = None
 
 
 class Job(SQLModel, table=True):

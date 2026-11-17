@@ -10,6 +10,9 @@ Each agent keeps its login in its own Docker volume, `thinair-auth-<id>`. That v
 only into that agent's sandboxes. Thinair never reads, copies or sends it anywhere, and the
 cleanup job never deletes it.
 
+**From the phone (Claude Code and Codex):** open **Agents** in the app and tap **Sign in**. See
+"In-app login" below for exactly what passes through Thinair. Everything else, from a terminal:
+
 ```sh
 thinair auth claude           # opens Claude Code; type /login, follow the link, then /exit
 thinair auth claude --check   # prints "logged in" or "NOT logged in"
@@ -27,6 +30,63 @@ several Thinair users (see the README), every user has their own volume,
 `thinair-auth-<id>.<user>`, and logs in with `thinair auth <id> --user <user>`; their jobs only
 ever mount that volume. The owner keeps `thinair-auth-<id>`, and only the owner's jobs get the
 `env_passthrough` variables from Thinair's `.env`. Check your plan's terms for automated use.
+
+## In-app login (sign in from the phone)
+
+An agent with `auth.login_flow` in its YAML can be signed in from the app (Agents > Sign in).
+Thinair runs the agent's own login command in a terminal inside a container built from the
+agent's image, with the same hardening as every sandbox (uid 10001, no capabilities, read-only
+root, 1 CPU, 768 MiB, 512 processes), only that user's login volume mounted, no
+`env_passthrough` tokens, and behind the agent's egress allowlist when it has one. It reads the
+terminal's output, and relays:
+
+- **out:** the sign-in link, and for device-code logins the one-time code you type at the
+  provider. A link is tappable only if it is `https` and its host is in `login_flow.url_hosts`;
+  anything else is shown as text with a warning.
+- **in (Claude Code only):** the code the provider shows after sign-in, typed at the CLI's
+  prompt, only while the CLI is showing that prompt. Escapes, control characters and whitespace
+  are removed first, and it is capped at 2,000 characters.
+
+The CLI writes the login into its own volume, and Thinair checks it with `check_command`.
+Nothing about a sign-in is stored: no database rows, no job events, and the server log records
+state changes only (never the link or a code). A sign-in belongs to the user who started it
+(everyone else gets 404, admins too), one per user, three on the server at once, ten minutes
+each. The container is removed when it ends, is cancelled or expires, and the janitor removes
+leftovers after a crash (label `thinair.job=login-<id>`).
+
+`login_flow` keys: `command` (argv), `url` (regex; group 1 if present), `url_hosts` (exact host
+names), `code_out` (regex for a device code; group 1 if present), `code_in` (regex for the
+prompt that wants a code), `help` (one line on the screen). Patterns match the output with
+terminal colours and links removed. An ACP variant that shares another agent's login (Claude
+Code (ACP)) is signed in through that agent's flow.
+
+**What the pinned CLIs print in a terminal (checked 2026-11-14, no account, nothing typed):**
+
+- Claude Code 2.1.311, `claude auth login`: `Opening browser to sign in…`, then
+  `If the browser didn't open, visit: <link>` (the link appears twice: inside an OSC 8 terminal
+  hyperlink and as coloured text), then the prompt `Paste code here if prompted > `. Line-based,
+  not full-screen, so no screen emulator is needed. The link is
+  `https://claude.com/cai/oauth/authorize?...` with `code_challenge=...&code_challenge_method=S256`
+  (PKCE): the pasted code can't be redeemed without the verifier, which never leaves the CLI's
+  process inside the container. The pinned binary exchanges the code at
+  `https://platform.claude.com/v1/oauth/token` and then calls `api.anthropic.com`; both are on
+  the egress allowlist. `claude.com` is only opened on the phone.
+- Codex 0.166.0, `codex login --device-auth`: a welcome banner, then
+  `1. Open this link in your browser and sign in to your account` /
+  `https://auth.openai.com/codex/device`, then `2. Enter this one-time code (expires in 15
+  minutes)` / a code like `ABCD-EFGH1`, and a warning to continue only if you started the login.
+  It contacts `auth.openai.com` to get the code, polls it, and exits 0 once the login is saved;
+  nothing is typed into it. Device code login must be enabled in ChatGPT's security settings.
+- Gemini CLI: its Google sign-in is full-screen and needs a browser on the same machine, so it
+  has no `login_flow`. The app shows the `thinair auth gemini` command instead.
+
+Tested: the state machine with these exact byte streams (cut at every point, including inside
+escapes, the link and UTF-8); the API with a fake terminal (isolation between users, cancel,
+expiry, limits, nothing in job events or logs); a fake login program through a real container
+terminal (link, refused code, retry, credential saved, container removed); the real CLIs up to
+the link in Docker; and the real server on an Oracle ARM VM through the Docker socket proxy
+(both CLIs reach the link, cancel removes the containers). Not tested: completing a real login
+(that needs the owner's account).
 
 ## Security model for agent runs
 

@@ -8,8 +8,18 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from thinair import __version__
-from thinair.api import auth, routes, runner_api
+from thinair import __version__, setup_state
+from thinair.agents.login import DockerLoginBackend, LoginBackend, LoginHub
+from thinair.api import (
+    auth,
+    devices_api,
+    github_api,
+    login_api,
+    push_api,
+    routes,
+    runner_api,
+    setup_api,
+)
 from thinair.api.web import mount_web
 from thinair.auth import bootstrap_admin_token
 from thinair.config import get_settings
@@ -18,7 +28,7 @@ from thinair.db.models import Job, JobKind
 from thinair.db.session import get_engine, session_scope
 from thinair.jobs.executors import default_executors
 from thinair.jobs.service import Executor, JobService
-from thinair.notify import NotifyConfigError, notifier_from_settings
+from thinair.notify import NotifyConfigError, WebPushNotifier, notifier_from_settings
 from thinair.retention import retention_loop
 from thinair.runners import RunnerHub, make_remote_executor
 
@@ -28,6 +38,7 @@ log = logging.getLogger("thinair")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     upgrade(get_engine())  # once at startup; creates/updates the SQLite file
+    setup_state.mark("installed")  # first start only; the funnel never leaves the server
     with session_scope() as session:
         new_token = bootstrap_admin_token(session, get_settings().admin_token)
     if new_token:
@@ -42,10 +53,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     settings = get_settings()
     try:
-        notifier = notifier_from_settings()
+        telegram = notifier_from_settings()
     except NotifyConfigError as e:
-        logging.getLogger("thinair").error("notifications disabled: %s", e)
-        notifier = None
+        logging.getLogger("thinair").error("telegram notifications disabled: %s", e)
+        telegram = None
+    webpush = WebPushNotifier() if settings.web_push else None
+    notifier = telegram
     hub = RunnerHub()
 
     def goes_remote(job: Job) -> bool:
@@ -60,10 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         job_timeout_s=settings.job_timeout_s,
         sweep_on_start=settings.sweep_on_start,
         notifier=notifier,
+        push_notifier=webpush,
+        attention_notifier=webpush.attention if webpush else None,
         remote_executor=make_remote_executor(hub),
         goes_remote=goes_remote,
     )
     app.state.runners = hub
+    # Agent sign-ins from the phone: in memory only, nothing runs until someone starts one.
+    logins = LoginHub(app.state.login_backend or DockerLoginBackend())
+    app.state.logins = logins
     await jobs.start()
     app.state.jobs = jobs
     # Once per start, in the background: has the public IP moved away from an sslip.io name?
@@ -84,11 +102,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cleanup.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await cleanup
+        await logins.close_all()  # their containers go too
         await jobs.stop()
 
 
-def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
-    """`executors` lets tests run the real API with fake jobs (no Docker)."""
+def create_app(
+    executors: dict[JobKind, Executor] | None = None, login_backend: LoginBackend | None = None
+) -> FastAPI:
+    """`executors` and `login_backend` let tests run the real API with fakes (no Docker)."""
     docs = get_settings().api_docs
     app = FastAPI(
         title="Thinair",
@@ -100,11 +121,19 @@ def create_app(executors: dict[JobKind, Executor] | None = None) -> FastAPI:
         openapi_url="/openapi.json" if docs == "open" else None,
     )
     app.state.executors = executors
+    app.state.login_backend = login_backend
     app.state.origin_warning = None
     if docs == "auth":
         _docs_behind_login(app)
     app.include_router(auth.router)
     app.include_router(routes.router)
+    app.include_router(login_api.router)
+    app.include_router(github_api.router)
+    app.include_router(github_api.open_router)
+    app.include_router(setup_api.router)
+    app.include_router(push_api.router)
+    app.include_router(devices_api.router)
+    app.include_router(setup_api.open_router)
     app.include_router(runner_api.admin_router)
     app.include_router(runner_api.runner_router)
     mount_web(app)

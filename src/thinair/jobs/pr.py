@@ -16,22 +16,23 @@ import contextlib
 import io
 import tarfile
 
-from thinair.config import get_settings
 from thinair.db.models import Job, JobKind, JobResult, JobStatus, Repo
 from thinair.db.session import session_scope
 from thinair.github import (
+    Credential,
+    GitHubAccess,
     GitHubAPIError,
     GitHubClient,
     GitHubTokenError,
+    commit_identity,
     git_auth_env,
-    github_token,
     repo_slug,
 )
 from thinair.jobs.service import ExecResult, JobContext
 from thinair.project.prepare import GIT_IMAGE, SANDBOX_UID, ensure_image, workspace_volume
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxSpec, VolumeMount
-from thinair.users import github_token_allowed, job_user
+from thinair.users import github_allowed, github_token_allowed, job_user
 
 PATCH_IN_VOLUME = ".git/thinair-pr.patch"
 _SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"]
@@ -67,18 +68,38 @@ def check_pr_possible(job: Job | None, result: JobResult | None) -> None:
         raise PRError("no_base_commit", "This job has no recorded base commit.")
 
 
-def require_token() -> str:
+NEEDS_GITHUB = (
+    "Connect GitHub first (Connect GitHub in the app), or set THINAIR_GITHUB_TOKEN "
+    "(Contents and Pull requests: Read and write), to open pull requests."
+)
+
+
+def require_credentials() -> None:
+    """Fail fast on the phone (no network): is any GitHub access configured at all? Whether it
+    covers this repository is only known when a token is minted, in the job."""
     try:
-        token = github_token()
+        ok = GitHubAccess().can_open_pr()
     except GitHubTokenError as e:
         raise PRError("bad_github_token", str(e)) from None
-    if not token:
-        raise PRError(
-            "pr_needs_token",
-            "Set THINAIR_GITHUB_TOKEN to open pull requests (Contents and Pull requests: "
-            "Read and write).",
-        )
-    return token
+    if not ok:
+        raise PRError("pr_needs_token", NEEDS_GITHUB)
+
+
+async def _credential(access: GitHubAccess, url: str, need: str) -> Credential:
+    try:
+        cred = await access.token_for(url, need)
+    except GitHubTokenError as e:
+        raise PRError("bad_github_token", str(e)) from None
+    if cred is None:
+        if access.note == "not_installed":
+            raise PRError(
+                "pr_needs_token",
+                "Thinair's GitHub App is not installed on this repository. Add it under "
+                "Connect GitHub > Change repositories.",
+            )
+        extra = f" ({access.note})" if access.note else ""
+        raise PRError("pr_needs_token", NEEDS_GITHUB + extra)
+    return cred
 
 
 def pr_title(task: str | None) -> str:
@@ -152,7 +173,6 @@ async def build_commit(
     token: str | None,
 ) -> None:
     """Fetch `sha` (unless `url` is None: the volume already holds it), apply, commit."""
-    s = get_settings()
     if url is not None:
         for args in (["init", "-q"], ["remote", "add", "origin", url]):
             await _git(mgr, job_id, volume, args, log)
@@ -183,7 +203,8 @@ async def build_commit(
             "The agent's change no longer applies to the commit it was made on. "
             "Last output: " + " | ".join(out[-3:]),
         )
-    ident = ["-c", f"user.name={s.git_author_name}", "-c", f"user.email={s.git_author_email}"]
+    name, email = commit_identity()
+    ident = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
     code, out = await _git(
         mgr, job_id, volume, [*ident, "commit", "-q", "-m", message[0], "-m", message[1]], log
     )
@@ -192,8 +213,10 @@ async def build_commit(
 
 
 async def push_branch(
-    mgr: SandboxManager, job_id: str, volume: str, branch: str, token: str, log
+    mgr: SandboxManager, job_id: str, volume: str, branch: str, cred: "Credential | str", log
 ) -> None:
+    if isinstance(cred, str):  # a bare token (the PAT): kept for existing callers
+        cred = Credential(cred, "token")
     log(f"[thinair] pushing branch {branch}")
     code, out = await _git(
         mgr,
@@ -201,28 +224,45 @@ async def push_branch(
         volume,
         ["push", "-q", "--force", "origin", f"HEAD:refs/heads/{branch}"],
         log,
-        token=token,
+        token=cred.token,
         timeout_s=300,
     )
     if code != 0:
+        if cred.source == "app" and any("workflow" in ln.lower() for ln in out):
+            raise PRError(
+                "push_failed",
+                "This change edits files under .github/workflows/, which Thinair's GitHub App "
+                "is not allowed to push (it has no Workflows permission, on purpose). Download "
+                "the patch instead, or leave those files out of the change.",
+            )
+        who = (
+            "Thinair's GitHub App needs access to this repository with Contents: Read and write"
+            if cred.source == "app"
+            else 'The token needs "Contents: Read and write" on this repository'
+        )
         raise PRError(
             "push_failed",
-            'GitHub refused the push. The token needs "Contents: Read and write" on this '
-            "repository (you can only open PRs on repos you can push to). Last output: "
-            + " | ".join(out[-3:]),
+            f"GitHub refused the push. {who} (you can only open PRs on repos you can push to). "
+            "Last output: " + " | ".join(out[-3:]),
         )
 
 
 async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult:
     assert mgr is not None
     job = ctx.job
+    access = GitHubAccess()  # replaced below by one for the person the job belongs to
     try:
-        token = require_token()
+        require_credentials()  # nothing configured: stop before touching anything else
         with session_scope() as s:
             parent = s.get(Job, job.parent_job_id) if job.parent_job_id else None
             result = s.get(JobResult, parent.id) if parent else None
             repo = s.get(Repo, parent.repo_id) if parent else None
-            allowed = parent is not None and github_token_allowed(job_user(s, parent))
+            who = job_user(s, parent) if parent is not None else None
+            allowed = parent is not None and github_allowed(who)
+            # Their own installations are theirs; the server's connection only if they may use it.
+            access = GitHubAccess(
+                user_id=who.id if who is not None else None, use_server=github_token_allowed(who)
+            )
         check_pr_possible(parent, result)
         assert parent is not None and result is not None and repo is not None
         if not allowed:  # also checked at submit; the setting may have changed since
@@ -235,32 +275,42 @@ async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult
         title = pr_title(parent.task)
         body = pr_body(parent.task, result.summary, parent.id)
 
+        # The push container gets a Contents:write key and nothing else. The Pull requests:write
+        # key is separate and never leaves this process (it is not in any SandboxSpec).
+        push_cred = await _credential(access, repo.url, "push")
         volume = workspace_volume(job.id)
-        await ensure_image(mgr, "git", ctx.log)
-        await asyncio.to_thread(mgr.create_volume, volume, job.id)
         try:
-            await build_commit(
-                mgr,
-                job.id,
-                volume,
-                url=repo.url,
-                sha=parent.commit_sha,
-                patch=result.patch,
-                message=(title, f"Opened from Thinair job {parent.id}."),
-                log=ctx.log,
-                token=token,
-            )
-            await push_branch(mgr, job.id, volume, branch, token, ctx.log)
+            await ensure_image(mgr, "git", ctx.log)
+            await asyncio.to_thread(mgr.create_volume, volume, job.id)
+            try:
+                await build_commit(
+                    mgr,
+                    job.id,
+                    volume,
+                    url=repo.url,
+                    sha=parent.commit_sha,
+                    patch=result.patch,
+                    message=(title, f"Opened from Thinair job {parent.id}."),
+                    log=ctx.log,
+                    token=push_cred.token,
+                )
+                await push_branch(mgr, job.id, volume, branch, push_cred, ctx.log)
+            finally:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(asyncio.to_thread(mgr.remove_volume, volume))
         finally:
-            with contextlib.suppress(Exception):
-                await asyncio.shield(asyncio.to_thread(mgr.remove_volume, volume))
+            await asyncio.shield(push_cred.arevoke())
 
-        gh = GitHubClient(token)
-        base = parent.ref or await asyncio.to_thread(gh.default_branch, owner, name)
-        ctx.log(f"[thinair] opening a pull request: {branch} -> {base}")
-        url = await asyncio.to_thread(
-            gh.create_pull, owner, name, title=title, body=body, head=branch, base=base
-        )
+        pr_cred = await _credential(access, repo.url, "pr")
+        try:
+            gh = GitHubClient(pr_cred.token, source=pr_cred.source)
+            base = parent.ref or await asyncio.to_thread(gh.default_branch, owner, name)
+            ctx.log(f"[thinair] opening a pull request: {branch} -> {base}")
+            url = await asyncio.to_thread(
+                gh.create_pull, owner, name, title=title, body=body, head=branch, base=base
+            )
+        finally:
+            await asyncio.shield(pr_cred.arevoke())
     except PRError as e:
         return ExecResult(JobStatus.FAILED, e.code, e.message)
     except GitHubAPIError as e:

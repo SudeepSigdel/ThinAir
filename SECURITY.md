@@ -24,6 +24,12 @@ agents) inside Docker containers.
 - Test runs have no network. Install and agent runs do (they need package registries and the
   model provider).
 - Thinair reaches Docker through docker-socket-proxy, limited to the API sections it uses.
+- Connect GitHub (a per-server GitHub App) mints keys for one repository that last at most an hour
+  and are revoked when the step ends: a read-only key for the clone container, a write key for the
+  push container, and a pull-request key that never leaves Thinair's process. The app's private key
+  is a 0600 file in the data volume (never the database or environment), no sandbox can mount that
+  volume, and `thinair doctor` flags a readable key. The two GitHub redirect routes are open but act
+  only on a one-time state or re-read what GitHub says, and are throttled. See docs/github.md.
 - The optional GitHub token (`THINAIR_GITHUB_TOKEN`) is passed only to the clone container (and,
   for pull requests, to a push container that runs no repo code, plus Thinair's own REST calls),
   through git's environment config scoped to `https://github.com/`. It is never in argv,
@@ -32,6 +38,12 @@ agents) inside Docker containers.
 - The API requires a token. Only SHA-256 hashes are stored, wrong tokens are rate-limited, and the
   browser session is an HttpOnly, SameSite=Strict cookie. The web app ships a strict CSP and
   renders all job output as plain text.
+- Signing an agent in from the phone relays only the sign-in link and a one-time code between
+  the agent's own login command (in a hardened container with only that user's login volume)
+  and the user who started it. Nothing about it is stored or logged; other users, admins
+  included, get 404. Links are tappable only for `https` hosts the agent's config allows; a
+  pasted code is stripped of control characters and typed only at the CLI's code prompt.
+  One sign-in per user, three per server, ten minutes each.
 - With several users: members only see their own jobs (others' are a 404), only admins manage
   users, each user's agent login lives in its own volume, the owner's API keys only reach the
   owner's jobs, and the server's GitHub token is not used for members' jobs unless
@@ -43,6 +55,31 @@ agents) inside Docker containers.
   other users' data. Their messages are size-capped and validated, and a runner can only report
   on jobs it currently holds.
 
+- `thinair qr --short` adds a typed code (8 characters, 40 bits, `XXXX-XXXX`) for phones without a
+  camera. It is the same pairing (one redemption between the QR and the short form, same expiry),
+  stored only as a SHA-256. Because 40 bits is guessable in principle, every wrong short code seen
+  anywhere counts against all live short codes and 20 of them burn the short form (the long QR
+  code is unaffected), on top of the per-address failed-login throttle.
+- Web Push notifications: the payload is encrypted end to end to the browser (RFC 8291) and only
+  holds the repo name, job kind, outcome and the first line of the task (never logs, diffs or
+  summaries). Thinair POSTs only to the push services' own hosts (Google, Mozilla, Apple,
+  Microsoft: https, no credentials, port or IP literal, redirects never followed), so a crafted
+  subscription can't turn the server into a request forger. A subscription belongs to the API
+  token that made it and is deleted when the token is revoked or the user disabled. The VAPID
+  private key is a 0600 file in the data volume; if stolen, someone could send notifications to
+  subscribed phones until it is regenerated (delete `secrets/vapid.json`: phones must turn
+  notifications on again). It grants no access to Thinair or its data.
+- The **Devices** screen shows only your own signed-in devices and revokes only your own (others get
+  404). "Add a phone" creates the same one-time pairing code as `thinair qr`, drawn by the server as
+  an SVG path so no QR library or third party sees it; only an admin can make a code for someone
+  else. All `/api/devices*` routes need a login.
+- Members can connect their own GitHub installation. The callback (`/api/github/callback/user`) is an
+  open route that acts only on a live one-time state issued to a signed-in person, is throttled with the
+  login throttle, and claims an installation only when it is in that person's own `GET /user/installations`
+  list (their user token is used for two read calls and never stored). Installations owned by the server or
+  another member are never taken over, and one person's installation is never used for anyone else's jobs.
+- `GET /api/meta` is open (version, API level, feature names: nothing private) and throttled to
+  60 requests a minute per address. First-run progress (`thinair stats`) is stored locally only.
 - Phone pairing (`thinair qr`): the QR code holds a random one-time code (only its SHA-256 is
   stored) that expires after 10 minutes and works once. It travels in the URL fragment, which
   browsers never send to servers or proxies, and the app removes it from the address bar at once.
@@ -78,6 +115,9 @@ agents) inside Docker containers.
   inside their sandbox. Code they work on could trick them into reading and sending out the login
   mounted in that sandbox. Only run agent tasks on repositories you trust, and rotate the login
   (`docker volume rm thinair-auth-<agent>`, then log in again) if in doubt.
+- **The GitHub App's private key is on disk** in the data volume, so backups of that volume contain
+  it. If it is stolen, the thief can mint tokens for every repository the app is installed on until
+  you delete the app on GitHub (the same reach as a read/write token for those repositories).
 - **The GitHub token is visible to the host's Docker users** while a clone runs (`docker inspect`
   shows container environment). That is the same group that can already control Thinair. Use a
   fine-grained, read-only token limited to the repos you need.

@@ -7,10 +7,16 @@ the workspace volume, and it never reaches the install, test or agent containers
 becomes is scoped to `https://github.com/`, so git sends it nowhere else.
 """
 
+import asyncio
 import base64
+import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from thinair.config import get_settings
+
+log = logging.getLogger(__name__)
 
 # Tokens are opaque: classic (ghp_...), fine-grained (github_pat_...) and app installation
 # tokens, which since 2026-04-27 can be stateless `ghs_<app id>_<JWT>` (~520 characters, with
@@ -60,6 +66,142 @@ def git_auth_env(token: str) -> tuple[dict[str, str], list[str]]:
     return env, [token, basic]
 
 
+# ---- which credential a step may use ------------------------------------------------------
+@dataclass
+class Credential:
+    """A token for one step. `source` is "app" (a one-hour installation token for one
+    repository, revoked when the step ends) or "token" (the PAT from THINAIR_GITHUB_TOKEN).
+    `repr()` hides it."""
+
+    token: str = field(repr=False)
+    source: str
+    _revoke: Callable[[], None] | None = field(default=None, repr=False)
+
+    def __repr__(self) -> str:
+        return f"Credential(source={self.source!r}, token=***)"
+
+    async def arevoke(self) -> None:
+        """Invalidate an app token now. Never raises: it expires within the hour anyway."""
+        if self._revoke is None:
+            return
+        revoke, self._revoke = self._revoke, None
+        try:
+            await asyncio.to_thread(revoke)
+        except Exception as e:  # noqa: BLE001 - revoking is best effort; log the type only
+            log.warning("could not revoke a GitHub App token (%s)", type(e).__name__)
+
+
+class GitHubAccess:
+    """Resolves, per step and repository, which GitHub credential to use: (1) the GitHub App's
+    installation, if one covers the repository, (2) the token in THINAIR_GITHUB_TOKEN, (3) none
+    (anonymous). Whether a *user* may use the server's GitHub connection at all is decided by
+    the caller (`users.github_token_allowed`): this class only resolves what exists.
+
+    `note` says why the app could not be used (shown in clone failure hints)."""
+
+    def __init__(
+        self,
+        app_factory: Callable | None = None,
+        *,
+        user_id: str | None = None,
+        use_server: bool = True,
+    ) -> None:
+        """`user_id` is the person the step runs for (None = the owner); `use_server` says whether
+        they may use the server's connection (the server's app installations and the PAT).
+        A member's own installations are always theirs to use."""
+        self._factory = app_factory
+        self.user_id = user_id
+        self.use_server = use_server
+        self.note: str | None = None
+
+    @staticmethod
+    def app_connected() -> bool:
+        from thinair.github_app import app_connected
+
+        return app_connected()
+
+    def _app(self, creds):  # noqa: ANN001, ANN202
+        if self._factory is not None:
+            return self._factory(creds)
+        from thinair.github_app import GitHubApp
+
+        return GitHubApp(creds)
+
+    def _from_app(self, repo_url: str, need: str) -> Credential | None:
+        from thinair.github_app import PERMISSIONS, load_credentials
+
+        try:
+            creds = load_credentials()
+            if creds is None:
+                return None
+            owner, name = repo_slug(repo_url)
+            app = self._app(creds)
+            iid = app.installation_for_repo(owner, name)
+            if iid is None:
+                self.note = "not_installed"
+                return None
+            if not self._may_use(iid):
+                self.note = "not_yours"
+                return None
+            token = app.mint_token(iid, PERMISSIONS[need], repo=name)
+        except GitHubAPIError as e:
+            self.note = e.message
+            log.warning("GitHub App token unavailable (status %s)", e.status)
+            return None
+        except ValueError:
+            return None  # not a github.com repository URL
+        return Credential(token, "app", lambda: app.revoke(token))
+
+    def _may_use(self, installation_id: int) -> bool:
+        """An installation is usable by its owner; the server's (and any not recorded yet, which
+        count as the server's) only by people allowed to use the server's connection."""
+        from thinair.db.models import GitHubInstallation
+        from thinair.db.session import session_scope
+
+        try:
+            with session_scope() as s:
+                row = s.get(GitHubInstallation, installation_id)
+                owner = row.user_id if row is not None and row.removed_at is None else None
+        except Exception:  # noqa: BLE001 - no tables yet: behave as before members existed
+            owner = None
+        if owner is not None:
+            return owner == self.user_id
+        return self.use_server
+
+    async def token_for(self, repo_url: str, need: str) -> Credential | None:
+        """`need` is "clone", "push" or "pr". Raises GitHubTokenError if THINAIR_GITHUB_TOKEN
+        is set but malformed (as before)."""
+        if self.app_connected():
+            cred = await asyncio.to_thread(self._from_app, repo_url, need)
+            if cred is not None:
+                return cred
+        if not self.use_server:
+            return None  # the token in .env is the server's
+        token = github_token()
+        return Credential(token, "token") if token else None
+
+    def can_open_pr(self) -> bool:
+        """Cheap early check (no network): is any credential configured at all?"""
+        return self.app_connected() or github_token() is not None
+
+
+def commit_identity() -> tuple[str, str]:
+    """Author name and email for commits Thinair makes. THINAIR_GIT_AUTHOR_* wins; when the email
+    isn't set and an app is connected, the connecting account's noreply address."""
+    s = get_settings()
+    name, email = s.git_author_name, s.git_author_email
+    if "git_author_email" not in s.model_fields_set:
+        from thinair.github_app import load_credentials, noreply_email
+
+        try:
+            creds = load_credentials()
+        except GitHubAPIError:
+            creds = None
+        if creds is not None:
+            email = noreply_email(creds)
+    return name, email
+
+
 # ---- REST API (opening pull requests) ------------------------------------------------------
 API = "https://api.github.com"
 _SLUG = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
@@ -84,12 +226,15 @@ def repo_slug(url: str) -> tuple[str, str]:
 class GitHubClient:
     """Tiny synchronous client for the few REST calls Thinair makes. Call it from a thread."""
 
-    def __init__(self, token: str, session=None, timeout_s: float = 30) -> None:
+    def __init__(
+        self, token: str, session=None, timeout_s: float = 30, source: str = "token"
+    ) -> None:
         import requests
 
         self._s = session or requests.Session()
         self._token = token
         self._timeout = timeout_s
+        self._source = source
 
     def _call(self, method: str, path: str, **kw):
         import requests
@@ -105,7 +250,7 @@ class GitHubClient:
         except requests.RequestException as e:
             raise GitHubAPIError(None, f"Could not reach GitHub: {type(e).__name__}") from None
         if resp.status_code >= 400:
-            raise GitHubAPIError(resp.status_code, _explain(resp))
+            raise GitHubAPIError(resp.status_code, _explain(resp, self._source))
         return resp.json() if resp.content else None
 
     def default_branch(self, owner: str, repo: str) -> str:
@@ -139,7 +284,7 @@ class GitHubClient:
         return pr["html_url"]
 
 
-def _explain(resp) -> str:
+def _explain(resp, source: str = "token") -> str:
     try:
         data = resp.json()
     except ValueError:
@@ -151,6 +296,15 @@ def _explain(resp) -> str:
     )
     if extra:
         detail = f"{detail} ({extra})"
+    if source == "app":
+        if resp.status_code == 401:
+            return "GitHub rejected Thinair's short-lived key. Try again."
+        if resp.status_code in (403, 404):
+            return (
+                "GitHub refused the request. Thinair's GitHub App needs access to this "
+                "repository with Pull requests: Read and write. "
+                f"GitHub said: {detail or resp.status_code}"
+            )
     if resp.status_code == 401:
         return "GitHub rejected THINAIR_GITHUB_TOKEN (expired or revoked?)."
     if resp.status_code in (403, 404):

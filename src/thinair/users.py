@@ -99,9 +99,15 @@ def disable_user(session: Session, name: str) -> User:
     tokens = session.exec(
         select(ApiToken).where(ApiToken.user_id == user.id, ApiToken.revoked_at.is_(None))  # type: ignore[union-attr]
     )
+    ids = []
     for t in tokens:
         t.revoked_at = now
         session.add(t)
+        ids.append(t.id)
+    if ids:
+        from thinair.auth import _drop_push
+
+        _drop_push(session, ids)
     session.commit()
     return user
 
@@ -117,7 +123,21 @@ def auth_volume_name(agent_id: str, user: User | None) -> str:
 
 
 def github_token_allowed(user: User | None) -> bool:
-    return user is None or user.is_admin or get_settings().github_token_for_members
+    """May this user's jobs use the server's GitHub connection (the app or the token)?"""
+    s = get_settings()
+    return user is None or user.is_admin or s.github_token_for_members or s.github_for_members
+
+
+def github_allowed(user: User | None) -> bool:
+    """May this person's jobs use any GitHub access: the server's connection, or an installation
+    of their own?"""
+    if github_token_allowed(user):
+        return True
+    if user is None:
+        return False
+    from thinair.github_app import has_own_installation
+
+    return has_own_installation(user.id)
 
 
 # ---- how many unfinished jobs a member may have -------------------------------------------------

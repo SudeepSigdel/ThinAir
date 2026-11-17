@@ -19,6 +19,8 @@ from thinair.db.models import (
     ProfileRun,
 )
 from thinair.db.session import session_scope
+from thinair.github import GitHubAccess
+from thinair.github_app import has_own_installation
 from thinair.jobs.service import ExecResult, Executor, JobContext
 from thinair.profiler.models import ProfileResult
 from thinair.profiler.report import to_markdown
@@ -42,6 +44,15 @@ def cache_scope(user) -> str:  # noqa: ANN001
     return OWNER_NAME if user is None else user.name
 
 
+def github_access_for(owner) -> "bool | GitHubAccess":  # noqa: ANN001
+    """What a job's clone may use: True/False = the server's connection allowed or not (as before);
+    a GitHubAccess when the person also has an installation of their own."""
+    allowed = github_token_allowed(owner)
+    if owner is not None and has_own_installation(owner.id):
+        return GitHubAccess(user_id=owner.id, use_server=allowed)
+    return allowed
+
+
 def owner_github_auth(job: Job) -> bool:
     """May this job use a GitHub token (the server's, or a remote runner's own)?"""
     return github_token_allowed(_owner(job))
@@ -55,7 +66,7 @@ async def profile_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecR
         ctx.job.id,
         log=ctx.log,
         on_run=lambda rec: ctx.emit(EventType.PROFILE_RUN, rec.model_dump(mode="json")),
-        github_auth=owner_github_auth(ctx.job),
+        github_auth=github_access_for(_owner(ctx.job)),
         cache_scope=cache_scope(_owner(ctx.job)),
     )
     return save_profile_result(
@@ -132,7 +143,7 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
         GitSource(ctx.repo.url, job.ref),
         job.id,
         ctx.log,
-        github_auth=github_token_allowed(owner),
+        github_auth=github_access_for(owner),
         cache_scope=cache_scope(owner),
     )
     try:
@@ -164,6 +175,8 @@ async def agent_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecRes
                 if ev.data:
                     payload["data"] = ev.data
                 ctx.emit(EventType.AGENT_MSG, payload)
+                if ev.kind in ("permission_request", "waiting") and ctx.attention:
+                    ctx.attention(ev.kind)
         r = adapter.result()
         with session_scope() as s:
             s.add(

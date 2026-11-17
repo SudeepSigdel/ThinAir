@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session, case, func, select
 
+from thinair import setup_state
 from thinair.agents.config import load_agents
 from thinair.api.auth import require_admin, require_auth
 from thinair.auth import create_token
@@ -65,6 +66,7 @@ class RepoOut(BaseModel):
     created_at: datetime
     default_agent_id: str | None = None
     default_ref: str | None = None
+    private: bool | None = None
     # Counted over the jobs the caller can see (members: their own).
     jobs: int = 0
     active_jobs: int = 0
@@ -111,6 +113,8 @@ class JobOut(BaseModel):
 
 class RepoIn(BaseModel):
     url: str = Field(min_length=1, max_length=300)
+    # From the GitHub picker: only decides whether a lock is shown; never trusted for anything.
+    private: bool | None = None
 
 
 class JobIn(BaseModel):
@@ -204,20 +208,28 @@ def list_repos(who: Principal = Depends(require_auth)) -> list[RepoOut]:
 
 
 @router.post("/repos", response_model=RepoOut, status_code=201, tags=["repos"])
-def add_repo(body: RepoIn) -> Repo:
-    """Register a GitHub repository (idempotent). Private ones need THINAIR_GITHUB_TOKEN."""
+def add_repo(body: RepoIn, who: Principal = Depends(require_auth)) -> Repo:
+    """Register a GitHub repository (idempotent). Private ones need GitHub connected (the
+    app, or THINAIR_GITHUB_TOKEN)."""
     source = GitSource(body.url.strip().rstrip("/"))
     try:
         source.validate()
     except PrepareError as e:
         raise _err(422, e.code, e.message) from e
+    created = False
     with session_scope() as s:
         repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
         if repo is None:
             repo = Repo(url=source.url, name=source.url.split("/")[-1].removesuffix(".git"))
             s.add(repo)
-            s.commit()
-        return repo
+            created = True
+        if body.private is not None and repo.private is None:
+            repo.private = body.private
+            s.add(repo)
+        s.commit()
+    if created:
+        setup_state.mark("project_added", who.user_id)
+    return repo
 
 
 @router.get("/repos/{repo_id}", response_model=RepoOut, tags=["repos"])
@@ -557,8 +569,10 @@ def get_patch(job_id: str, who: Principal = Depends(require_auth)) -> Response:
 
 # ---- agents --------------------------------------------------------------------------------
 @router.get("/agents", tags=["agents"])
-def list_agents() -> list[dict[str, Any]]:
+def list_agents(request: Request, who: Principal = Depends(require_auth)) -> list[dict[str, Any]]:
     """Configured coding agents (built-in plus `$THINAIR_DATA_DIR/agents/*.yaml`)."""
+    from thinair.api.login_api import login_info
+
     agents, _errors = load_agents(agents_dir())
     return [
         {
@@ -568,6 +582,8 @@ def list_agents() -> list[dict[str, Any]]:
             "login_hint": a.auth_hint,
             # ACP agents can hold a conversation (replies and approvals while they work).
             "conversational": a.protocol == "acp",
+            # Sign in from the app (in_app) and the last known state: ok|missing|unknown.
+            "login": login_info(request, agents, a, who),
         }
         for a in agents.values()
     ]

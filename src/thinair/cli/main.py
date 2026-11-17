@@ -655,6 +655,9 @@ def qr(
         None, "--url", help="Address the phone opens (default: THINAIR_PUBLIC_URL)"
     ),
     ttl: int = typer.Option(10, "--ttl", min=1, max=60, help="Minutes the code stays valid"),
+    short: bool = typer.Option(
+        False, "--short", help="Also print a short code to type when the phone has no camera"
+    ),
 ) -> None:
     """Show a QR code that signs a phone in: scan it with the phone's camera.
 
@@ -665,7 +668,7 @@ def qr(
 
     import segno
 
-    from thinair.pairing import create_pairing_code, pairing_url
+    from thinair.pairing import create_pairing, pairing_url
 
     _utf8_output()
     base = (url or get_settings().public_url or "").strip()
@@ -680,7 +683,9 @@ def qr(
         typer.echo("Note: over http:// the phone can't install the app (that needs HTTPS).")
     upgrade(get_engine())
     with session_scope() as session:
-        code = create_pairing_code(session, _user_id(session, user), ttl=timedelta(minutes=ttl))
+        code, short_code = create_pairing(
+            session, _user_id(session, user), timedelta(minutes=ttl), short=short
+        )
     link = pairing_url(base, code)
     qr_code = segno.make(link, error="m")
     qr_code.terminal(compact=True, border=2)
@@ -688,6 +693,10 @@ def qr(
     typer.echo(f"Scan it with the phone's camera (works once, for {ttl} minutes).")
     typer.echo("It is drawn for a dark terminal; if it won't scan, open the link below instead.")
     typer.echo(f"Or open: {link}")
+    if short_code:
+        typer.echo("")
+        typer.echo(f"No camera? Open {base} and enter the code from `thinair qr`:  {short_code}")
+        typer.echo(f"(Valid {ttl} minutes, works once. At most 20 wrong guesses are allowed.)")
 
 
 net_app = typer.Typer(help="Phone access helpers (used by the installer and for troubleshooting).")
@@ -748,3 +757,101 @@ def net_firewall_hint(
 
     for line in firewall_hint(cloud or None):
         typer.echo(line)
+
+
+github_app_cli = typer.Typer(help="The GitHub connection (Connect GitHub in the app).")
+app.add_typer(github_app_cli, name="github")
+
+
+@github_app_cli.command("status")
+def github_status() -> None:
+    """Show how Thinair reaches GitHub: the app, a token in .env, or neither."""
+    from thinair.db.session import session_scope
+    from thinair.github import GitHubAPIError, GitHubTokenError, github_token
+    from thinair.github_app import active_installations, load_credentials, manage_url
+
+    try:
+        creds = load_credentials()
+    except GitHubAPIError as e:
+        typer.echo(f"GitHub App: problem: {e.message}")
+        creds = None
+    if creds is not None:
+        typer.echo(f"GitHub App: {creds.slug} (owner {creds.owner_login})")
+        try:
+            with session_scope() as s:
+                rows = active_installations(s)
+        except Exception:  # noqa: BLE001 - no database yet
+            rows = []
+        for r in rows:
+            typer.echo(
+                f"  installed on {r.account_login} ({r.repository_selection}): {manage_url(r)}"
+            )
+        if not rows:
+            typer.echo("  not installed on any repository yet: open Connect GitHub in the app")
+    else:
+        typer.echo("GitHub App: not connected (open Connect GitHub in the app)")
+    try:
+        typer.echo("Token in .env: " + ("set" if github_token() else "not set"))
+    except GitHubTokenError as e:
+        typer.echo(f"Token in .env: problem: {e}")
+
+
+@github_app_cli.command("disconnect")
+def github_disconnect(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask"),
+) -> None:
+    """Uninstall the app, delete its key and forget its installations. GitHub has no API to
+    delete the app registration itself, so this prints where to do that last step."""
+    from thinair.db.session import session_scope
+    from thinair.github_app import app_connected, disconnect
+
+    if not app_connected():
+        typer.echo("No GitHub App is connected.")
+        return
+    if not yes and not typer.confirm(
+        "Thinair will lose access to your repositories (open pull requests stay). Continue?"
+    ):
+        raise typer.Exit(1)
+    with session_scope() as s:
+        delete_url = disconnect(s)
+    typer.echo("Disconnected. The app's key was deleted from this server.")
+    if delete_url:
+        typer.echo(f"To remove the app registration from GitHub too: {delete_url}")
+
+
+def _fmt_delta(seconds: int | None) -> str:
+    if seconds is None:
+        return ""
+    if seconds < 90:
+        return f"+{seconds} s"
+    if seconds < 5400:
+        return f"+{seconds // 60} min"
+    return f"+{seconds / 3600:.1f} h"
+
+
+@app.command()
+def stats(
+    user: str | None = typer.Option(None, "--user", help="A member (default: the owner)"),
+) -> None:
+    """Show how far first-run setup got and how long each step took.
+
+    These timestamps live only in your own database. Thinair never sends them anywhere: if you
+    want to share them, copy this output into an issue yourself."""
+    from thinair import setup_state
+
+    upgrade(get_engine())
+    with session_scope() as session:
+        uid = _user_id(session, user)
+        rows = setup_state.funnel(session, uid)
+    who = user or OWNER_NAME
+    typer.echo(f"First run for {who} (local only, never sent anywhere):")
+    if not rows:
+        typer.echo("  nothing recorded yet")
+        return
+    for r in rows:
+        typer.echo(
+            f"  {r['at'][:19].replace('T', ' ')}  {r['name']:<22} {_fmt_delta(r['after_s'])}"
+        )
+    missing = [e for e in setup_state.FUNNEL if e not in {r["name"] for r in rows}]
+    if missing:
+        typer.echo("  not yet: " + ", ".join(missing))

@@ -1,6 +1,6 @@
 [project]
 name = "thinair"
-version = "0.1.2"
+version = "0.2.0"
 description = "Self-hostable platform to run AI coding agents in sandboxes and find the minimum resources a project needs."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,6 +16,7 @@ dependencies = [
   "pyyaml>=6.0.3",              # thinair.yaml and agent configs
   "requests>=2.32",             # GitHub REST calls (open PRs); already required by docker
   "segno>=1.6",                # QR codes in the terminal (`thinair qr`); pure Python, no deps
+  "cryptography>=44",          # RS256 for the GitHub App JWT (stdlib has no RSA); arm64 + x86 wheels
 ]
 
 [project.optional-dependencies]

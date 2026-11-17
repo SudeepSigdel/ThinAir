@@ -97,3 +97,20 @@ def test_unknown_host_cpu_count_leaves_limits_alone() -> None:
         mgr = SandboxManager(client)
         assert mgr.host_cpus() == 0
         assert mgr.fit(spec(cpus=2)).cpus == 2
+
+
+def test_terminal_specs() -> None:
+    """Agent sign-ins get a TTY: only with stdin, same hardening, and never through run()."""
+    with pytest.raises(ValidationError, match="stdin"):
+        spec(tty=True)
+    a = build_container_args(spec(tty=True, stdin=True))
+    assert a["tty"] is True and a["stdin_open"] is True
+    assert a["user"] == "10001:10001" and a["cap_drop"] == ["ALL"] and a["read_only"] is True
+    assert build_container_args(spec())["tty"] is False
+
+    from thinair.sandbox.manager import SandboxManager
+
+    with pytest.raises(ValueError, match="open_terminal"):
+        SandboxManager(client=object()).run_blocking(spec(tty=True, stdin=True))
+    with pytest.raises(ValueError, match="tty=True"):
+        SandboxManager(client=object()).open_terminal(spec(stdin=True))

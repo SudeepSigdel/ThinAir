@@ -416,6 +416,143 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   a Tailscale install to public (`THINAIR_PHONE=public`) turns that handler off first (`release_tailscale_443`) and
   restores it if public mode fails (found on the Oracle VM).
 
+## Agent sign-in from the phone (`src/thinair/agents/login.py`, `api/login_api.py`, onboarding v2 phase 2)
+- `auth.login_flow` (agents/config.py `LoginFlow`: command, url, url_hosts, code_out, code_in, help) on claude and
+  codex. `FlowMachine` (pure) cleans terminal output (OSC 8 links, CSI colours, CR) and moves preparing -> link ->
+  verifying -> done|failed|expired|cancelled. A match counts only when followed by whitespace (never half a link cut
+  between reads). A code is typed (+ "\r") only while the `code_in` prompt is unanswered; a new prompt after a code =
+  refused -> back to link. Exit 0 -> `check_command` decides done/failed.
+- `LoginHub` (`app.state.logins`, in memory only; `create_app(login_backend=)` for fakes): one session per user
+  (409 `login_running` + its id), `MAX_SESSIONS`=3 (429), 10 min after the container starts, finished sessions kept
+  2 min. Sessions are 404 for everyone but their starter (admins too). Never write them to EventStore/DB; the log gets
+  state names only (a test asserts no link/code in logs and no JobEvent rows). `known[volume]` feeds
+  `GET /api/agents` `login: {in_app, state}` (never runs a container there).
+- `DockerLoginBackend`: agent image for the node stack, `SandboxManager.open_terminal(spec)` (tty+stdin, attach
+  BEFORE start, same call as StdinPipe, so no new socket-proxy permission: verified on the Oracle ARM VM through
+  tecnativa/docker-socket-proxy), egress gateway when the agent has `egress` (ensure the python sandbox image first:
+  sign-ins skip workspace preparation, which normally builds it). Job label `login-<sid>` (janitor sweeps).
+- `Terminal` reads in a daemon thread into a queue: Docker Desktop's Windows named pipe ignores socket timeouts
+  (a `recv` with a timeout hung forever). `run()` refuses tty specs.
+- Real CLI output (2026-11-14) is recorded in docs/agents.md "In-app login"; Claude's link host is `claude.com`
+  (not claude.ai), PKCE present; Codex device URL https://auth.openai.com/codex/device, code `XXXX-XXXXX`.
+  Tests: test_agent_login.py (canned bytes at every cut, API with FakeBackend), test_agent_login_docker.py (fake login
+  program through a real tty, real CLIs up to the link with `-test` ids). Never complete a real login in tests.
+- UI: header link Agents (`#/agents`: state, Sign in / Check, terminal hint for others) and `#/agent/<id>/login`
+  (O3: link button, paste box or big device code + Copy, status). SSE events carry the same payload as GET
+  (`LoginSession.public()`; a smoke test caught "undefined is signed in" when they differed). A job failed with
+  `agent_not_authenticated` links to the sign-in screen. Browser smoke (Edge, phone size): 19 checks.
+
+## Connect GitHub (`src/thinair/github_app.py`, `github.py`, `api/github_api.py`, onboarding v2 phase 3, docs/github.md)
+- Per-server GitHub App via the manifest flow. Credentials (app id, slug, client id/secret, PEM) live ONLY in
+  `$THINAIR_DATA_DIR/secrets/github-app.json` (`secrets.py`: dir 0700, file 0600, temp+rename). Never DB/env/logs;
+  `AppCredentials.__repr__` is `***`. `VolumeMount` refuses the server's data volume (`thinair-data`, `*_thinair-data`,
+  `THINAIR_DATA_VOLUME`). Doctor `GitHub App` check is local only (file mode, installations).
+- `GitHubAccess.token_for(url, need)` (github.py): app installation key if one covers the repo (`GET /repos/o/r/installation`
+  with the app JWT), else the PAT, else None. Needs: clone = contents:read, push = contents:write, pr = pull_requests:write
+  + metadata:read, list = metadata:read; always `repositories=[repo]`. `Credential.arevoke()` in `finally` (clone, push, PR,
+  picker). App errors fall back to PAT/anonymous and set `access.note` (used in hints). `prepare_workspace(github_auth=)`
+  still takes a bool (True = may use the server's connection: app > PAT) or a `GitHubAccess`, so executors and runners are
+  unchanged. PR job: push key and PR key are separate; the PR key is in no SandboxSpec. `require_credentials()` is the
+  no-network early check (the existing test needs it BEFORE any DB access).
+- Tables (migration 0010): `GitHubInstallation` (non-secret), `OneTimeState` (SHA-256, 10 min, single use,
+  `consume_state` is a conditional UPDATE), `Repo.private` (cosmetic lock from the picker).
+- Routes `/api/github` (auth): GET status, POST app (admin; 409 `no_public_url`/`app_exists`), POST sync, GET repos,
+  DELETE app. OPEN: `/callback/app` (needs a live `github_app` state BEFORE any outbound call; bad states count toward
+  the login throttle) and `/callback/setup` (never trusts `installation_id`; per-IP 20/min + 5 s global cooldown unless it
+  carries a live `github_install` state). GitHub's docs don't say whether `state` is echoed to the setup URL, so nothing
+  depends on it. CSP `form-action 'self' https://github.com` (the manifest is a real form POST).
+- Commit author: `THINAIR_GIT_AUTHOR_EMAIL` if set, else the app owner's noreply address (`commit_identity()`).
+  `THINAIR_GITHUB_FOR_MEMBERS` = alias of `..._TOKEN_FOR_MEMBERS`. No `workflows` permission on purpose.
+- UI: header link GitHub -> `#/setup/github` (O2), `#/setup/project` (O4 picker), home "Choose from your GitHub
+  repositories". `thinair github status|disconnect`. Tests: test_github_app.py (fake GitHub session, 40), docker clone with a
+  fake app key. Browser smoke (Edge, phone size, scratch): 26 checks; never follow GitHub's redirect in the browser
+  (read `Location` with `ctx.request.get(maxRedirects: 0)`, else it leaves for the real github.com).
+- `cryptography` is a dependency (RS256); arm64 manylinux wheels exist (checked 2026-11-17).
+
+## First run, setup state, health (`setup_state.py`, `api/setup_api.py`, onboarding v2 phase 4)
+- `SetupEvent(user_key, name, at, value)` (migration 0011; owner's `user_key` is "owner" because a nullable user id
+  can't be unique). Funnel events are stamped ONCE by `setup_state.mark(name, user_id)` (never raises): `installed`
+  (startup), `paired` (`pairing.redeem`), `github_connected` (setup callback/sync), `agent_connected` (LoginHub done),
+  `project_added` (`add_repo`, new repos only), `first_job` (`JobService.submit`), `first_agent_success`/`first_pr`
+  (`_funnel` after a job ends). Choices are rows too: `skip:<step>`, `dismissed`, `preferred_agent` (value). They never
+  leave the server; `thinair stats` prints them.
+- `steps_for()` computes `done` from real state every time (github = app with an installation or a PAT; agent =
+  preferred agent's login in `LoginHub.known` OR a succeeded agent job; project = repos visible; first_task = any
+  agent/profile job by that user). Members' github step is "managed by this server's admin". `/api/setup` GET/POST
+  (skip, unskip, dismiss, preferred_agent -> single-flight background `ensure_agent_image(node)`), `/api/meta` (open,
+  60/min per address), `/api/health` (admin; `doctor.run_checks(online=False)` in a thread, problems first, `Check` now
+  has `id` and `action=(kind,target,label)`), `POST /api/health/fix/images` (202, single flight).
+- Short pairing codes: `create_pairing(session, user_id, ttl, short=True)` -> (long, `XXXX-XXXX`); Crockford base32,
+  `short_hash`, `failures` on the row; a wrong short code increments `failures` on ALL live short rows, 20 burns the short
+  form (long QR unaffected). `POST /api/pair` takes either; `thinair qr --short`; the installer uses it when supported.
+- UI: `#/setup` (Welcome + agent radios), `#/setup/github|agent|project|first-task` with a progress bar and Skip, "Finish
+  setting up" card + first-visit hop to Welcome (localStorage `thinair.setup.seen`), empty states, `#/settings/health`
+  (admin link at the bottom of Projects). `#/setup/project` shows an address field when GitHub isn't connected. Screens
+  render before their data arrives: browser tests must poll for text (a `textIs` helper), not read once.
+
+## Web Push (`src/thinair/push.py`, `notify.py` `WebPushNotifier`, `api/push_api.py`, onboarding v2 phase 5)
+- `push.py`: VAPID key in `secrets/vapid.json` (generated on first use, never when `THINAIR_WEB_PUSH=false`), ES256 JWT
+  (12 h, `aud` = the push service origin, `sub` = the https public URL or `mailto:thinair@example.com`), RFC 8291
+  `aes128gcm` encryption on `cryptography` (HKDF + AESGCM; `test_push.py` checks it against RFC 8291's own Appendix A
+  vector), `send()` (blocking, `allow_redirects=False`, errors never contain the endpoint: it identifies a device).
+  `endpoint_allowed`: https, no userinfo/port/IP literal, host `fcm.googleapis.com` or a subdomain of
+  `push.services.mozilla.com` / `push.apple.com` / `notify.windows.com`.
+- `PushSubscription` (migration 0012) tied to the creating API token: `auth.revoke_token` and `users.disable_user` delete
+  them; 404/410 deletes at once, 5 failures in a row delete. One per login, 20 per person. Routes `/api/push` (GET status +
+  public key, POST/DELETE `/subscriptions`, POST `/test` 10 s cooldown). Payload `{"web_push": 8030, "notification":
+  {title, body, navigate, tag}}` (iOS 18.4+ shows it natively; `sw.js` `push`/`notificationclick` do it elsewhere and
+  only open same-origin addresses).
+- `notify.job_summary()` feeds Telegram (`job_message`, byte-identical) and `WebPushNotifier` (to the JOB OWNER's
+  subscriptions only). `JobService(notifier=<Telegram>, push_notifier=, attention_notifier=)`: keep Telegram in
+  `notifier` (an existing test requires `_notifier is None` when its settings are bad). Each notifier runs on its own
+  and never touches the job. `JobService.attention(job_id, kind)` (agent executor calls it on `permission_request` /
+  `waiting` via `ctx.attention`) is debounced to one push per job per 60 s; tests move the clock through
+  `service._now`, never `time.monotonic` (that would freeze asyncio).
+- UI: banner `#push-banner` on Projects and on a running job (once per job), iOS Add-to-Home-Screen steps, Android
+  `beforeinstallprompt` -> "Install the app", "Not now" remembered in localStorage; manifest `id` + `share_target`
+  (a shared GitHub link prefills the add-project form). Real push delivery is untested here (needs a real phone).
+
+## Members' own GitHub (onboarding v2 phase 7, docs/github.md "Members' own GitHub accounts")
+- `GitHubInstallation.user_id` NULL = the server's, else the member's. `GitHubAccess(user_id=, use_server=)`: the person's
+  own installation is theirs; the server's (and unrecorded ones, which count as the server's) and the PAT only if
+  `use_server`. A repo covered by someone else's installation gives note `not_yours`. `users.github_allowed(user)` = may use
+  the server's connection OR has an installation of their own (PR submit/executor); `jobs.executors.github_access_for(owner)`
+  returns the plain bool unless the member has their own (test_users asserts a bool).
+- Flow (all documented behaviour, no install-time OAuth): `POST /api/github/mine/start` -> authorize URL with our `state`
+  (purpose `github_member`, bound to the member) -> open `GET /api/github/callback/user` -> `exchange_user_code` (client secret
+  from `secrets/github-app.json`, form body) -> `user_installations` -> `claim_installations` (user's list ∩ the app's list,
+  never takes over owned rows). `AppCredentials.callback_ready` (manifest now has `callback_urls`); older apps need Reconnect.
+  `sync_installations` never changes an existing row's owner. Picker lists the person's own installations (+ the server's if
+  allowed). Not verified against a real GitHub (needs two accounts).
+
+## The core loop UI (onboarding v2 phase 6)
+- Scripts (plain, `defer`, no build step; top-level `let`/`const` and functions are shared globals, order in
+  `index.html` matters): `diff.js` (pure parser, tested under Node), `app.js` (helpers, api, routing, home, DOMContentLoaded
+  start), `views-jobs.js` (project, job, conversations, results), `views-account.js` (login, pairing, agents, sign-in),
+  `views-setup.js` (GitHub, picker, setup, health, push, share), `views-settings.js` (tab bar, Activity, Settings, Devices,
+  People), `views-diff.js` (review screen, result and PR cards). `sw.js` caches all of them (bump `CACHE` when the list
+  changes); `test_web.py` fails if a script isn't in `index.html` and the shell, and bans markup-from-string sinks in ALL
+  of them.
+- Tokens (style.css `:root`, dark under `prefers-color-scheme`): `--bg --surface --surface-2 --line --ink --ink-2 --ink-3
+  --accent --accent-ink --accent-soft --ok --warn --danger --danger-ink --info --code-* --add-bg --del-bg`; old names
+  (`--fg --muted --card ...`) are aliases. `test_web.py` asserts WCAG AA for ~30 text/background pairs in both modes. Two
+  plan values were darkened to pass (`--ok`, `--danger`). Icons: `static/icons.svg` sprite + `icon(name, label)`;
+  `scripts/make_icons.py` (stdlib) redraws icon.svg and the PNGs.
+- Routes: `#/` `#/activity` `#/settings` (+ `/devices` `/people` `/health`) show the bottom tab bar (`updateTabbar`);
+  job, project, setup, sign-in and `#/job/<id>/changes` hide it. API: `/api/devices` (own tokens, revoke, `POST /pair`
+  returns a QR as an SVG path + the short code; `{user}` admin-only), `/api/meta` has `agent_idle_s` for the approval
+  countdown.
+- Diff review: `parseDiff` consumes hunks by their `@@` counts (a removed line starting `-- ` is not a header), flags CRLF
+  (`cr`), "no newline" (`noEol`), binary, rename, add/delete; files render lazily on first open (300 lines per animation
+  frame); first readable file open, >400 changed lines and binary start closed (the "Large change" note sits in the
+  summary so it shows while closed); wrap toggle remembered; jump buttons walk hunks across files.
+- Live job: `#job-state` (queued / the latest `[thinair]` line while starting), `#job-conn` ("Reconnecting..."), raw log
+  folded for agent jobs, `atBottom()`/`afterAppend()` (follow only when at the bottom, else `#new-msgs`), tool rows are
+  buttons, approval cards are `role=alertdialog` with a countdown; first PR celebration once per browser
+  (`thinair.celebrated`), static under reduced motion. Browser smoke (scratch, Edge): 26 checks incl. 320 px, dark,
+  reduced motion, offline. Gotcha: screens render before their data arrives, so tests must wait for the job to finish
+  through the API (the UI keeps the previous job's DOM for a moment).
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

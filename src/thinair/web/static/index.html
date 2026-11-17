@@ -12,19 +12,322 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/diff.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/views-jobs.js" defer></script>
+  <script src="/static/views-account.js" defer></script>
+  <script src="/static/views-setup.js" defer></script>
+  <script src="/static/views-settings.js" defer></script>
+  <script src="/static/views-diff.js" defer></script>
 </head>
 <body>
   <header class="bar">
     <a class="brand" href="#/">Thinair</a>
     <span class="bar-end">
       <span id="who" class="who" hidden></span>
-      <button id="logout" class="link" type="button" hidden>Log out</button>
     </span>
   </header>
 
+  <p id="offline-banner" role="status" hidden>Offline. Showing what was loaded.</p>
   <main>
     <p id="loading" class="muted">Loading…</p>
+
+    <!-- Activity: every job, newest first -->
+    <section id="view-activity" hidden>
+      <h1>Activity</h1>
+      <ul id="activity-jobs" class="jobs"></ul>
+      <p id="activity-empty" class="muted" hidden>No jobs yet. Start one from a project.</p>
+      <p class="error" id="activity-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" hidden>
+      <h1>Settings</h1>
+      <ul class="rows" id="settings-rows"></ul>
+      <p class="caption section-label">This server</p>
+      <ul class="rows">
+        <li><span class="row-static"><span>Thinair <span id="settings-version"></span></span></span></li>
+        <li><span class="row-static"><span class="val" id="settings-url"></span></span></li>
+      </ul>
+      <button id="logout" class="secondary" type="button">Log out</button>
+      <div id="settings-push" hidden></div>
+    </section>
+
+    <!-- Devices -->
+    <section id="view-devices" hidden>
+      <a href="#/settings" class="back">‹ Settings</a>
+      <h1>Devices</h1>
+      <p class="muted">Phones and browsers signed in as you. Signing one out also stops its notifications.</p>
+      <ul class="rows" id="device-list"></ul>
+      <button id="add-phone" type="button">Add a phone</button>
+      <div id="pair-box" hidden>
+        <p class="muted">Scan this with the new phone's camera. It works once, for 10 minutes.</p>
+        <svg id="pair-qr" class="qr" role="img" aria-label="QR code to sign a phone in" xmlns="http://www.w3.org/2000/svg"></svg>
+        <p class="muted">No camera? Open <span id="pair-url"></span> and enter:</p>
+        <p class="code-short" id="pair-short"></p>
+      </div>
+      <p class="error" id="devices-error" role="alert" hidden></p>
+    </section>
+
+    <!-- People (admins) -->
+    <section id="view-people" hidden>
+      <a href="#/settings" class="back">‹ Settings</a>
+      <h1>People</h1>
+      <ul class="rows" id="people-list"></ul>
+      <form id="person-form" class="inline-form" autocomplete="off">
+        <label for="person-name">Add a person</label>
+        <div class="inline">
+          <input id="person-name" type="text" maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" required
+                 autocapitalize="off" spellcheck="false" placeholder="alice">
+          <button type="submit">Add</button>
+        </div>
+      </form>
+      <div id="person-pair" hidden>
+        <p>Added. On their phone, scan this, or type the code:</p>
+        <svg id="person-qr" class="qr" role="img" aria-label="QR code for the new person" xmlns="http://www.w3.org/2000/svg"></svg>
+        <p class="code-short" id="person-short"></p>
+      </div>
+      <p class="error" id="people-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Diff review -->
+    <section id="view-changes" hidden>
+      <a href="#/" id="changes-back" class="back">‹ Job</a>
+      <div class="changes-head">
+        <h1>Changes</h1>
+        <span class="num" id="changes-stat"></span>
+      </div>
+      <p id="changes-summary" class="muted"></p>
+      <div class="diff-tools" id="diff-tools" hidden>
+        <button type="button" id="diff-wrap" class="secondary" aria-pressed="true">Wrap lines</button>
+        <button type="button" id="diff-all" class="link">Expand all</button>
+      </div>
+      <p id="changes-empty" class="muted" hidden>The agent didn't change any files.</p>
+      <p id="changes-truncated" class="warn" hidden>This diff is long; the rest is in the patch.</p>
+      <div id="diff-list" class="diff-list"></div>
+      <div class="jump" id="diff-jump" hidden>
+        <button type="button" id="jump-prev" aria-label="Previous change"></button>
+        <button type="button" id="jump-next" aria-label="Next change"></button>
+      </div>
+      <div class="actionbar" id="changes-bar" hidden></div>
+      <p class="error" id="changes-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Notifications banner (Projects and a running job) -->
+    <aside id="push-banner" class="setup-card" hidden>
+      <strong>Get told when it's done</strong>
+      <p id="push-text" class="muted">One notification when a job finishes or needs your answer.</p>
+      <ol id="push-ios" class="muted" hidden>
+        <li>Tap the Share button.</li>
+        <li>Tap Add to Home Screen.</li>
+        <li>Open Thinair from there and turn notifications on.</li>
+      </ol>
+      <div class="actions">
+        <button id="push-on" type="button">Turn on</button>
+        <button id="push-test" type="button" class="secondary" hidden>Send a test</button>
+        <button id="push-off" type="button" class="link" hidden>Turn off</button>
+        <button id="push-install" type="button" class="secondary" hidden>Install the app</button>
+        <button id="push-later" type="button" class="link">Not now</button>
+      </div>
+      <p class="error" id="push-error" role="alert" hidden></p>
+    </aside>
+
+    <!-- Setup progress, shown on every setup step -->
+    <div id="setup-bar" class="setup-bar" hidden>
+      <a href="#/setup" class="back">‹ Setup</a>
+      <span id="setup-count" class="muted"></span>
+      <a id="setup-skip" href="#" class="link">Skip for now</a>
+      <progress id="setup-progress" max="4" value="0" aria-label="Setup progress"></progress>
+    </div>
+
+    <!-- Welcome: confirm the phone is connected, learn the agent -->
+    <section id="view-setup" hidden>
+      <h1>You're connected.</h1>
+      <p class="muted">Four short steps and your phone can hand work to a coding agent.</p>
+      <fieldset id="setup-agent">
+        <legend>Which agent do you use?</legend>
+        <label class="choice"><input type="radio" name="agent-choice" value="claude"> Claude Code</label>
+        <label class="choice"><input type="radio" name="agent-choice" value="codex"> Codex</label>
+        <label class="choice"><input type="radio" name="agent-choice" value="other"> Something else</label>
+      </fieldset>
+      <p id="setup-other-note" class="muted" hidden>Add agents later from the Agents screen. You can still connect GitHub now.</p>
+      <ol id="setup-steps" class="setup-steps"></ol>
+      <p class="muted">About 3 minutes. Skip anything.</p>
+      <div class="actions">
+        <button id="setup-continue" type="button">Continue</button>
+        <button id="setup-dismiss" class="link" type="button">Don't show this again</button>
+      </div>
+      <p class="error" id="setup-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Setup step 2: the agent -->
+    <section id="view-setup-agent" hidden>
+      <h1 id="sa-title">Sign in to your agent</h1>
+      <p class="muted">Your login stays inside the agent's own storage on your server. Thinair never sees it.</p>
+      <p id="sa-status" role="status"></p>
+      <p id="sa-hint" class="muted wrap" hidden></p>
+      <div class="actions">
+        <a id="sa-signin" class="button" href="#" hidden>Sign in</a>
+        <button id="sa-continue" type="button" hidden>Continue</button>
+      </div>
+      <p><a href="#/setup">Use a different agent</a></p>
+      <p class="error" id="sa-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Setup step 4: a first task -->
+    <section id="view-first" hidden>
+      <h1>Try a first task</h1>
+      <p id="first-on" class="muted"></p>
+      <form id="first-form" autocomplete="off">
+        <label for="first-task" class="visually-hidden">Task</label>
+        <textarea id="first-task" rows="5" maxlength="4000" required></textarea>
+        <p>Or: <button id="first-typos" type="button" class="secondary">Fix typos in the docs</button>
+          <button id="first-own" type="button" class="secondary">Write my own</button></p>
+        <p class="muted">The agent works on a copy. Nothing reaches GitHub until you tap Create pull request.</p>
+        <button id="first-start" type="submit">Start</button>
+      </form>
+      <p id="first-alt" hidden><button id="first-profile" type="button" class="secondary">See the smallest machine this project's tests pass on</button></p>
+      <p class="error" id="first-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Setup health: thinair doctor for the phone -->
+    <section id="view-health" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <h1>Setup health</h1>
+      <p id="health-summary" role="status">Checking…</p>
+      <ul id="health-list" class="jobs"></ul>
+      <p id="health-first" class="muted"></p>
+      <p class="error" id="health-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Connect GitHub: the app, no token to copy -->
+    <section id="view-github" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <h1>Connect GitHub</h1>
+      <p id="github-loading" class="muted">Loading…</p>
+      <div id="github-body" hidden>
+        <p id="github-intro" class="muted"></p>
+        <ul id="github-points" class="points">
+          <li>No token to copy</li>
+          <li>Access only to the repositories you choose</li>
+          <li>Each job gets a one-hour key for one repository</li>
+        </ul>
+        <p id="github-state" role="status"></p>
+        <ul id="github-installs" class="jobs" hidden></ul>
+        <p id="github-next" class="muted" hidden>GitHub asks you to tap "Create GitHub App", then to
+          pick repositories and tap "Install". Nothing is installed until you do.</p>
+        <details id="github-org" hidden>
+          <summary>Using a GitHub organization?</summary>
+          <label for="github-org-name">Organization name</label>
+          <input id="github-org-name" type="text" maxlength="39" autocapitalize="off"
+                 autocomplete="off" spellcheck="false" placeholder="my-org">
+        </details>
+        <div class="actions" id="github-actions">
+          <button id="github-connect" type="button" hidden>Connect GitHub</button>
+          <a id="github-choose" class="button" target="_blank" rel="noopener noreferrer" hidden>Choose repositories ↗</a>
+          <a id="github-pick" class="button" href="#/setup/project" hidden>Pick a repository</a>
+          <a id="github-manage" class="link" target="_blank" rel="noopener noreferrer" hidden>Change repositories on GitHub ↗</a>
+          <button id="github-disconnect" class="secondary" type="button" hidden>Disconnect</button>
+        </div>
+        <p id="github-delete" class="muted" hidden></p>
+        <p id="github-members-note" class="muted" hidden></p>
+        <div id="github-mine" hidden>
+          <h2>Your own GitHub</h2>
+          <p id="github-mine-text" class="muted"></p>
+          <ul id="github-mine-list" class="jobs"></ul>
+          <div class="actions">
+            <button id="github-mine-connect" type="button">Connect my GitHub</button>
+            <button id="github-mine-forget" type="button" class="secondary" hidden>Forget</button>
+          </div>
+        </div>
+      </div>
+      <p class="error" id="github-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Pick a repository from the ones the GitHub App can see -->
+    <section id="view-pick" hidden>
+      <a href="#/setup/github" class="back">‹ GitHub</a>
+      <h1>Pick a repository</h1>
+      <label for="pick-search" class="visually-hidden">Search</label>
+      <input id="pick-search" type="search" placeholder="Search" autocapitalize="off"
+             autocomplete="off" spellcheck="false">
+      <p id="pick-loading" class="muted" role="status">Loading your repositories…</p>
+      <ul id="pick-list" class="jobs"></ul>
+      <p id="pick-empty" class="muted" hidden>Thinair's GitHub App can't see any repositories yet.</p>
+      <form id="pick-url-form" autocomplete="off" hidden>
+        <p class="muted">Public repositories work without connecting GitHub.</p>
+        <label for="pick-url">Repository address</label>
+        <div class="inline">
+          <input id="pick-url" type="url" required inputmode="url" placeholder="https://github.com/owner/repo"
+                 autocapitalize="off" spellcheck="false">
+          <button type="submit">Add</button>
+        </div>
+        <p><a href="#/setup/github">Connect GitHub for private repositories</a></p>
+      </form>
+      <p id="pick-more" class="muted" hidden>
+        <a id="pick-manage" target="_blank" rel="noopener noreferrer">Don't see it? Add repositories on GitHub ↗</a><br>
+        <a href="#/">Paste a public repository URL instead</a>
+      </p>
+      <p class="error" id="pick-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Agents: who is signed in, and signing them in from the phone -->
+    <section id="view-agents" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <h1>Agents</h1>
+      <p class="muted">Each agent signs in once, with your own account. The login stays in that
+        agent's own storage on your server; Thinair never sees it.</p>
+      <ul id="agent-list" class="jobs"></ul>
+      <p class="error" id="agents-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Sign in to one agent -->
+    <section id="view-signin" hidden>
+      <a href="#/agents" class="back">‹ Agents</a>
+      <h1 id="signin-title">Sign in</h1>
+      <p class="muted" id="signin-intro"></p>
+      <p class="muted" id="signin-preparing" role="status" hidden></p>
+      <ol id="signin-steps" class="steps" hidden>
+        <li>
+          <span class="step-title" id="signin-open-title">Open the sign-in page</span>
+          <a id="signin-link" class="button" target="_blank" rel="noopener noreferrer" hidden>Open sign-in page ↗</a>
+          <p id="signin-url-box" hidden><span class="warn-text">This address isn't one Thinair expects,
+            so it isn't a link. Check it before you open it:</span>
+            <code id="signin-url" class="wrap"></code></p>
+        </li>
+        <li id="signin-paste" hidden>
+          <span class="step-title">Paste the code it gives you</span>
+          <form id="signin-form" class="inline-form" autocomplete="off">
+            <label for="signin-code" class="visually-hidden">Code</label>
+            <div class="inline">
+              <input id="signin-code" type="text" maxlength="2000" autocapitalize="off"
+                     autocomplete="one-time-code" spellcheck="false" placeholder="Paste the code">
+              <button type="submit" id="signin-submit">Finish sign-in</button>
+            </div>
+          </form>
+        </li>
+        <li id="signin-device" hidden>
+          <span class="step-title">Enter this code there</span>
+          <div class="inline">
+            <strong id="signin-user-code" class="code-big"></strong>
+            <button type="button" id="signin-copy" class="secondary">Copy</button>
+          </div>
+          <p class="muted">Your Thinair server started this sign-in, so this code is safe to
+            enter. This screen finishes by itself.</p>
+        </li>
+      </ol>
+      <p class="muted" id="signin-help" hidden></p>
+      <p id="signin-status" role="status" hidden></p>
+      <p class="error" id="signin-error" role="alert" hidden></p>
+      <p id="signin-command-box" hidden>On the server, run:
+        <code id="signin-command" class="wrap"></code></p>
+      <div class="actions">
+        <button type="button" id="signin-continue" hidden>Continue</button>
+        <button type="button" id="signin-again" hidden>Start again</button>
+        <button type="button" id="signin-takeover" hidden>Cancel it and start this one</button>
+        <button type="button" id="signin-cancel" class="secondary" hidden>Cancel</button>
+      </div>
+    </section>
 
     <!-- Login -->
     <section id="view-login" hidden>
@@ -38,6 +341,14 @@
         <button type="submit">Log in</button>
         <p class="error" id="login-error" role="alert" hidden></p>
       </form>
+      <form id="pair-form" autocomplete="off">
+        <h2>Or use a code</h2>
+        <label for="pair-code">Code from <code>thinair qr</code></label>
+        <input id="pair-code" type="text" maxlength="40" autocapitalize="characters"
+               autocomplete="off" spellcheck="false" placeholder="K7QM-2XVD">
+        <button type="submit" class="secondary">Sign in with the code</button>
+        <p class="error" id="pair-error" role="alert" hidden></p>
+      </form>
     </section>
 
     <!-- Home: projects + recent jobs -->
@@ -45,8 +356,20 @@
       <div class="row">
         <h1>Projects</h1>
       </div>
+      <div id="setup-card" class="setup-card" hidden>
+        <strong>Finish setting up</strong> <span id="setup-card-count" class="muted"></span>
+        <p id="setup-card-next"></p>
+        <div class="actions">
+          <a id="setup-card-go" class="button" href="#/setup">Continue</a>
+          <button id="setup-card-dismiss" class="link" type="button">Dismiss</button>
+        </div>
+      </div>
       <ul id="repos" class="jobs"></ul>
-      <p id="repos-empty" class="muted" hidden>No projects yet. Add a GitHub repository to start.</p>
+      <p id="pick-github-box" hidden><a id="pick-github" class="button" href="#/setup/project">Choose from your GitHub repositories</a></p>
+      <div id="repos-empty" hidden>
+        <p class="muted">No projects yet. A project is a GitHub repository Thinair can work on.</p>
+        <a id="first-project" class="button" href="#/setup/project">Add your first project</a>
+      </div>
       <form id="add-repo-form" class="inline-form" autocomplete="off">
         <label for="repo-url">Add a project</label>
         <div class="inline">
@@ -63,6 +386,7 @@
       </div>
       <ul id="jobs" class="jobs"></ul>
       <p id="jobs-empty" class="muted" hidden>No jobs yet.</p>
+      <p id="health-link-box" class="muted" hidden><a href="#/settings/health">Setup health</a></p>
     </section>
 
     <!-- One project: new job + its jobs + settings -->
@@ -72,10 +396,6 @@
         <h1 id="repo-title"></h1>
       </div>
       <p class="muted"><a id="repo-link" rel="noopener noreferrer" target="_blank"></a></p>
-      <div class="tabs" role="tablist">
-        <button type="button" id="mode-agent" class="tab" role="tab" aria-selected="true">Agent task</button>
-        <button type="button" id="mode-profile" class="tab" role="tab" aria-selected="false">Resource profile</button>
-      </div>
       <p id="mode-help" class="muted"></p>
       <form id="job-form">
         <div id="agent-fields">
@@ -94,15 +414,17 @@
           <input id="repo-ref" name="ref" type="text" placeholder="default branch" autocapitalize="off"
                  spellcheck="false">
         </details>
+        <p id="agent-signin-row" class="warn" hidden><span id="agent-signin-text"></span> <a id="agent-signin-link" href="#">Sign in</a></p>
         <button type="submit" id="submit-job">Start agent</button>
         <p class="error" id="job-error" role="alert" hidden></p>
+        <p><button type="button" id="mode-toggle" class="link">Measure resources instead</button></p>
       </form>
 
       <div class="row">
         <h2>Jobs</h2>
       </div>
       <ul id="repo-jobs" class="jobs"></ul>
-      <p id="repo-jobs-empty" class="muted" hidden>No jobs on this project yet.</p>
+      <p id="repo-jobs-empty" class="muted" hidden>No jobs on this project yet. Describe a task above and tap Start, or ask for a resource profile.</p>
 
       <details id="repo-settings" hidden>
         <summary>Project defaults</summary>
@@ -128,6 +450,8 @@
         <span id="job-status" class="chip"></span>
       </div>
       <p id="job-meta" class="muted"></p>
+      <p id="job-state" role="status" hidden></p>
+      <p id="job-conn" role="status" hidden>Reconnecting…</p>
       <p id="job-error-msg" class="error" role="alert" hidden></p>
       <div class="actions">
         <button id="cancel" type="button" class="danger" hidden>Cancel</button>
@@ -173,5 +497,11 @@
       </details>
     </section>
   </main>
+  <button type="button" id="new-msgs" hidden>New messages ↓</button>
+  <nav id="tabbar" aria-label="Main" hidden>
+    <a href="#/" id="tab-projects"></a>
+    <a href="#/activity" id="tab-activity"></a>
+    <a href="#/settings" id="tab-settings"></a>
+  </nav>
 </body>
 </html>
