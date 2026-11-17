@@ -1,7 +1,8 @@
 """`thinair doctor`: check a Thinair install and say how to fix what's wrong.
 
-Every check is read-only. Network requests (all skipped with `--offline`): with a GitHub token
-configured, `GET https://api.github.com/rate_limit` with that token (to GitHub only); an
+Every check is read-only. The GitHub App check reads only local files and the database. Network
+requests (all skipped with `--offline`): with a GitHub token configured,
+`GET https://api.github.com/rate_limit` with that token (to GitHub only); an
 anonymous check for a newer release; with an sslip.io address, one anonymous request for this
 machine's public IP (to https://ipv4.icanhazip.com); and an HTTPS request to Thinair's own
 address. Nothing is sent to Telegram, and no agent is started.
@@ -59,6 +60,7 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
     guard("phone access", _phone)
     guard("public address", lambda: _public_address(online))
     guard("https", lambda: _https(online))
+    guard("github app", _github_app)
     guard("github", lambda: _github(online))
     guard("notifications", _telegram)
     guard("runners", _runners)
@@ -377,6 +379,53 @@ def _https(online: bool) -> list[Check]:
             "shows why it failed)."
         )
     return [Check("warn", "HTTPS", res.reason, fix.strip())]
+
+
+def _github_app() -> Check:
+    """The GitHub App's key file and installations. Local only: no request leaves the machine."""
+    from thinair.github import GitHubAPIError
+    from thinair.github_app import SECRET_NAME, active_installations, load_credentials
+    from thinair.secrets import secret_mode_problem
+
+    try:
+        creds = load_credentials()
+    except GitHubAPIError as e:
+        return Check("fail", "GitHub App", e.message, "Reconnect GitHub in the app.")
+    if creds is None:
+        return Check(
+            "ok",
+            "GitHub App",
+            "not connected (a token in .env or public repositories still work)",
+            "Connect GitHub in the app for short-lived, per-repository keys.",
+        )
+    problem = secret_mode_problem(SECRET_NAME)
+    if problem:
+        return Check(
+            "fail",
+            "GitHub App",
+            problem,
+            "Run: chmod 600 <data dir>/secrets/github-app.json (or reconnect GitHub in the app).",
+        )
+    count = None
+    try:
+        if not _db_missing():
+            from thinair.db.session import session_scope
+
+            with session_scope() as s:
+                count = len(active_installations(s))
+    except Exception:  # no tables yet
+        count = None
+    if count == 0:
+        return Check(
+            "warn",
+            "GitHub App",
+            f"{creds.slug} exists but is not installed on any repository",
+            "Open Connect GitHub in the app and choose repositories.",
+        )
+    detail = f"{creds.slug} (owner {creds.owner_login})"
+    if count is not None:
+        detail += f", {count} installation{'s' if count != 1 else ''}"
+    return Check("ok", "GitHub App", detail)
 
 
 def _github(online: bool) -> Check:

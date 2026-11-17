@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from thinair.config import get_settings
-from thinair.github import GitHubTokenError, git_auth_env, github_token
+from thinair.github import GitHubAccess, GitHubTokenError, git_auth_env
 from thinair.project.config import ProjectConfig, ProjectConfigError, parse_project_config
 from thinair.project.detect import IMAGES, PYTHON_IMAGE, ResolvedProject, resolve_project
 from thinair.sandbox.manager import SandboxManager
@@ -175,12 +175,14 @@ async def prepare_workspace(
     job_id: str,
     log: LogFn,
     *,
-    github_auth: bool = True,
+    github_auth: "bool | GitHubAccess" = True,
     cache_scope: str | None = None,
 ) -> PreparedProject:
     """Create the workspace volume and run clone/upload, detection and install.
 
-    `github_auth=False` clones anonymously even if a GitHub token is configured (members' jobs).
+    `github_auth=False` clones anonymously even if GitHub access is configured (members' jobs
+    without the setting). True means "may use the server's GitHub connection": the GitHub App
+    if one covers the repository, else THINAIR_GITHUB_TOKEN. A `GitHubAccess` is accepted too.
     `cache_scope` (a user name) turns on the dependency cache for GitHub sources.
     On any failure the volume is removed and a `PrepareError` is raised.
     """
@@ -230,37 +232,63 @@ async def _load_source(mgr, source, job_id, volume, log, github_auth=True) -> st
         await asyncio.to_thread(mgr.put_tar, volume, PYTHON_IMAGE, data, job_id)
         return None
 
+    access = github_auth if isinstance(github_auth, GitHubAccess) else GitHubAccess()
     try:
-        token = github_token() if github_auth else None
+        cred = await access.token_for(source.url, "clone") if github_auth else None
     except GitHubTokenError as e:
         raise PrepareError("bad_github_token", str(e)) from None
-    log(f"[thinair] cloning {source.url}" + (" (with the GitHub token)" if token else ""))
-    await ensure_image(mgr, "git", log)
-    tail: list[str] = []
-    spec = clone_spec(job_id, volume, source, token)
-    res = await mgr.run(spec, lambda ln: (tail.append(ln), log(ln)))
+    token = cred.token if cred else None
+    if cred is None:
+        how = ""
+    elif cred.source == "app":
+        how = " (with a one-hour key from Thinair's GitHub App, for this repository only)"
+    else:
+        how = " (with the GitHub token)"
+    log(f"[thinair] cloning {source.url}{how}")
+    try:
+        await ensure_image(mgr, "git", log)
+        tail: list[str] = []
+        spec = clone_spec(job_id, volume, source, token)
+        res = await mgr.run(spec, lambda ln: (tail.append(ln), log(ln)))
+    finally:
+        if cred is not None:  # the key's work is done: invalidate it now, don't wait an hour
+            await asyncio.shield(cred.arevoke())
     if res.exit_code != 0:
-        if token:
-            hint = (
-                "Check the URL, and that THINAIR_GITHUB_TOKEN has read access to this "
-                "repository and has not expired."
-            )
-        elif not github_auth:
-            hint = (
-                "It may not exist, or it may be private: only admins' jobs may use the "
-                "server's GitHub token."
-            )
-        else:
-            hint = (
-                "It may not exist, or it may be private: set THINAIR_GITHUB_TOKEN to clone "
-                "private repositories."
-            )
         raise PrepareError(
             "clone_failed",
-            f"Could not clone the repository. {hint} Last output: " + " | ".join(tail[-3:]),
+            "Could not clone the repository. "
+            f"{_clone_hint(cred, bool(github_auth), access)} Last output: " + " | ".join(tail[-3:]),
         )
     code, lines = await _read_only(mgr, job_id, volume, ["rev-parse", "HEAD"], image=GIT_IMAGE)
     return lines[0] if code == 0 and lines else None
+
+
+def _clone_hint(cred, allowed: bool, access: GitHubAccess) -> str:  # noqa: ANN001
+    if cred is not None and cred.source == "app":
+        return (
+            "Thinair's GitHub App could not read it. Check the URL, and that the app is "
+            "installed on this repository (Connect GitHub > Change repositories)."
+        )
+    if cred is not None:
+        return (
+            "Check the URL, and that THINAIR_GITHUB_TOKEN has read access to this "
+            "repository and has not expired."
+        )
+    if not allowed:
+        return (
+            "It may not exist, or it may be private: only admins' jobs may use the "
+            "server's GitHub connection."
+        )
+    if access.app_connected():
+        why = f" ({access.note})" if access.note and access.note != "not_installed" else ""
+        return (
+            "It may not exist, or it may be private and not added to Thinair's GitHub App"
+            f"{why}. Add it under Connect GitHub > Change repositories."
+        )
+    return (
+        "It may not exist, or it may be private: connect GitHub (Connect GitHub in the app) "
+        "or set THINAIR_GITHUB_TOKEN to clone private repositories."
+    )
 
 
 def clone_spec(job_id: str, volume: str, source: GitSource, token: str | None) -> SandboxSpec:

@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Whether jobs of *member* users (not admins) may use that token: private clones and pull
     # requests as the token's GitHub account. Off by default (members: public repositories only).
     github_token_for_members: bool = False
+    # The clearer name for the same switch (the server's GitHub connection is no longer only a
+    # token): either one enables it for members.
+    github_for_members: bool = False
     # Commit author for pull requests opened from agent jobs (use your GitHub noreply email
     # to have commits linked to your account).
     git_author_name: str = Field(default="Thinair", pattern=r"^[^\r\n<>]{1,100}$")

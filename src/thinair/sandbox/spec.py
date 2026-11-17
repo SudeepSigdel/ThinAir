@@ -4,6 +4,7 @@ Design rule: a spec can only ever mount *named Docker volumes*. Host paths (and 
 Docker socket) are impossible to express, so no caller can accidentally widen the sandbox.
 """
 
+import os
 import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,6 +14,8 @@ LABEL_MANAGED = "thinair.managed"
 LABEL_JOB = "thinair.job"
 
 _VOLUME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# `thinair-data`, or Compose's project-prefixed `<project>_thinair-data`.
+_SERVER_DATA_VOLUME = re.compile(r"(?:^|_)thinair-data$")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NETWORK_RE = re.compile(r"^thinair-net-[A-Za-z0-9_.-]{1,100}$")
 _SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmgt]?)b?$", re.IGNORECASE)
@@ -39,6 +42,10 @@ class VolumeMount(BaseModel):
     def _volume_is_a_name(cls, v: str) -> str:
         if not _VOLUME_RE.match(v):
             raise ValueError("mounts must be named Docker volumes, never host paths")
+        if _SERVER_DATA_VOLUME.search(v) or v == os.environ.get("THINAIR_DATA_VOLUME"):
+            # Defence in depth: the server's own data volume holds the database and the GitHub
+            # App's private key. No sandbox ever needs it, whatever a bug tries to mount.
+            raise ValueError("the server's data volume can never be mounted into a sandbox")
         return v
 
     @field_validator("path")

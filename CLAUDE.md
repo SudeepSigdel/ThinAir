@@ -442,6 +442,33 @@ and profile the minimum CPU/RAM a project needs to pass its tests.
   (`LoginSession.public()`; a smoke test caught "undefined is signed in" when they differed). A job failed with
   `agent_not_authenticated` links to the sign-in screen. Browser smoke (Edge, phone size): 19 checks.
 
+## Connect GitHub (`src/thinair/github_app.py`, `github.py`, `api/github_api.py`, onboarding v2 phase 3, docs/github.md)
+- Per-server GitHub App via the manifest flow. Credentials (app id, slug, client id/secret, PEM) live ONLY in
+  `$THINAIR_DATA_DIR/secrets/github-app.json` (`secrets.py`: dir 0700, file 0600, temp+rename). Never DB/env/logs;
+  `AppCredentials.__repr__` is `***`. `VolumeMount` refuses the server's data volume (`thinair-data`, `*_thinair-data`,
+  `THINAIR_DATA_VOLUME`). Doctor `GitHub App` check is local only (file mode, installations).
+- `GitHubAccess.token_for(url, need)` (github.py): app installation key if one covers the repo (`GET /repos/o/r/installation`
+  with the app JWT), else the PAT, else None. Needs: clone = contents:read, push = contents:write, pr = pull_requests:write
+  + metadata:read, list = metadata:read; always `repositories=[repo]`. `Credential.arevoke()` in `finally` (clone, push, PR,
+  picker). App errors fall back to PAT/anonymous and set `access.note` (used in hints). `prepare_workspace(github_auth=)`
+  still takes a bool (True = may use the server's connection: app > PAT) or a `GitHubAccess`, so executors and runners are
+  unchanged. PR job: push key and PR key are separate; the PR key is in no SandboxSpec. `require_credentials()` is the
+  no-network early check (the existing test needs it BEFORE any DB access).
+- Tables (migration 0010): `GitHubInstallation` (non-secret), `OneTimeState` (SHA-256, 10 min, single use,
+  `consume_state` is a conditional UPDATE), `Repo.private` (cosmetic lock from the picker).
+- Routes `/api/github` (auth): GET status, POST app (admin; 409 `no_public_url`/`app_exists`), POST sync, GET repos,
+  DELETE app. OPEN: `/callback/app` (needs a live `github_app` state BEFORE any outbound call; bad states count toward
+  the login throttle) and `/callback/setup` (never trusts `installation_id`; per-IP 20/min + 5 s global cooldown unless it
+  carries a live `github_install` state). GitHub's docs don't say whether `state` is echoed to the setup URL, so nothing
+  depends on it. CSP `form-action 'self' https://github.com` (the manifest is a real form POST).
+- Commit author: `THINAIR_GIT_AUTHOR_EMAIL` if set, else the app owner's noreply address (`commit_identity()`).
+  `THINAIR_GITHUB_FOR_MEMBERS` = alias of `..._TOKEN_FOR_MEMBERS`. No `workflows` permission on purpose.
+- UI: header link GitHub -> `#/setup/github` (O2), `#/setup/project` (O4 picker), home "Choose from your GitHub
+  repositories". `thinair github status|disconnect`. Tests: test_github_app.py (fake GitHub session, 40), docker clone with a
+  fake app key. Browser smoke (Edge, phone size, scratch): 26 checks; never follow GitHub's redirect in the browser
+  (read `Location` with `ctx.request.get(maxRedirects: 0)`, else it leaves for the real github.com).
+- `cryptography` is a dependency (RS256); arm64 manylinux wheels exist (checked 2026-11-17).
+
 ## Deployment (`Dockerfile`, `docker-compose.yml`)
 - Server image: no apt; `/data` pre-created and owned by 10001 (empty-volume ownership gotcha again); optional
   `PIP_INDEX_URL` build arg fed from `THINAIR_PIP_INDEX_URL`. `.dockerignore` sends only pyproject/README/src.

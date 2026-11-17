@@ -65,6 +65,7 @@ class RepoOut(BaseModel):
     created_at: datetime
     default_agent_id: str | None = None
     default_ref: str | None = None
+    private: bool | None = None
     # Counted over the jobs the caller can see (members: their own).
     jobs: int = 0
     active_jobs: int = 0
@@ -111,6 +112,8 @@ class JobOut(BaseModel):
 
 class RepoIn(BaseModel):
     url: str = Field(min_length=1, max_length=300)
+    # From the GitHub picker: only decides whether a lock is shown; never trusted for anything.
+    private: bool | None = None
 
 
 class JobIn(BaseModel):
@@ -205,7 +208,8 @@ def list_repos(who: Principal = Depends(require_auth)) -> list[RepoOut]:
 
 @router.post("/repos", response_model=RepoOut, status_code=201, tags=["repos"])
 def add_repo(body: RepoIn) -> Repo:
-    """Register a GitHub repository (idempotent). Private ones need THINAIR_GITHUB_TOKEN."""
+    """Register a GitHub repository (idempotent). Private ones need GitHub connected (the
+    app, or THINAIR_GITHUB_TOKEN)."""
     source = GitSource(body.url.strip().rstrip("/"))
     try:
         source.validate()
@@ -216,7 +220,10 @@ def add_repo(body: RepoIn) -> Repo:
         if repo is None:
             repo = Repo(url=source.url, name=source.url.split("/")[-1].removesuffix(".git"))
             s.add(repo)
-            s.commit()
+        if body.private is not None and repo.private is None:
+            repo.private = body.private
+            s.add(repo)
+        s.commit()
         return repo
 
 

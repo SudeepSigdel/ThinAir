@@ -19,6 +19,7 @@
     <a class="brand" href="#/">Thinair</a>
     <span class="bar-end">
       <span id="who" class="who" hidden></span>
+      <a id="nav-github" class="link" href="#/setup/github" hidden>GitHub</a>
       <a id="nav-agents" class="link" href="#/agents" hidden>Agents</a>
       <button id="logout" class="link" type="button" hidden>Log out</button>
     </span>
@@ -26,6 +27,57 @@
 
   <main>
     <p id="loading" class="muted">Loading…</p>
+
+    <!-- Connect GitHub: the app, no token to copy -->
+    <section id="view-github" hidden>
+      <a href="#/" class="back">‹ Projects</a>
+      <h1>Connect GitHub</h1>
+      <p id="github-loading" class="muted">Loading…</p>
+      <div id="github-body" hidden>
+        <p id="github-intro" class="muted"></p>
+        <ul id="github-points" class="points">
+          <li>No token to copy</li>
+          <li>Access only to the repositories you choose</li>
+          <li>Each job gets a one-hour key for one repository</li>
+        </ul>
+        <p id="github-state" role="status"></p>
+        <ul id="github-installs" class="jobs" hidden></ul>
+        <p id="github-next" class="muted" hidden>GitHub asks you to tap "Create GitHub App", then to
+          pick repositories and tap "Install". Nothing is installed until you do.</p>
+        <details id="github-org" hidden>
+          <summary>Using a GitHub organization?</summary>
+          <label for="github-org-name">Organization name</label>
+          <input id="github-org-name" type="text" maxlength="39" autocapitalize="off"
+                 autocomplete="off" spellcheck="false" placeholder="my-org">
+        </details>
+        <div class="actions" id="github-actions">
+          <button id="github-connect" type="button" hidden>Connect GitHub</button>
+          <a id="github-choose" class="button" target="_blank" rel="noopener noreferrer" hidden>Choose repositories ↗</a>
+          <a id="github-pick" class="button" href="#/setup/project" hidden>Pick a repository</a>
+          <a id="github-manage" class="link" target="_blank" rel="noopener noreferrer" hidden>Change repositories on GitHub ↗</a>
+          <button id="github-disconnect" class="secondary" type="button" hidden>Disconnect</button>
+        </div>
+        <p id="github-delete" class="muted" hidden></p>
+      </div>
+      <p class="error" id="github-error" role="alert" hidden></p>
+    </section>
+
+    <!-- Pick a repository from the ones the GitHub App can see -->
+    <section id="view-pick" hidden>
+      <a href="#/setup/github" class="back">‹ GitHub</a>
+      <h1>Pick a repository</h1>
+      <label for="pick-search" class="visually-hidden">Search</label>
+      <input id="pick-search" type="search" placeholder="Search" autocapitalize="off"
+             autocomplete="off" spellcheck="false">
+      <p id="pick-loading" class="muted" role="status">Loading your repositories…</p>
+      <ul id="pick-list" class="jobs"></ul>
+      <p id="pick-empty" class="muted" hidden>Thinair's GitHub App can't see any repositories yet.</p>
+      <p id="pick-more" class="muted" hidden>
+        <a id="pick-manage" target="_blank" rel="noopener noreferrer">Don't see it? Add repositories on GitHub ↗</a><br>
+        <a href="#/">Paste a public repository URL instead</a>
+      </p>
+      <p class="error" id="pick-error" role="alert" hidden></p>
+    </section>
 
     <!-- Agents: who is signed in, and signing them in from the phone -->
     <section id="view-agents" hidden>
@@ -105,6 +157,7 @@
         <h1>Projects</h1>
       </div>
       <ul id="repos" class="jobs"></ul>
+      <p id="pick-github-box" hidden><a id="pick-github" class="button" href="#/setup/project">Choose from your GitHub repositories</a></p>
       <p id="repos-empty" class="muted" hidden>No projects yet. Add a GitHub repository to start.</p>
       <form id="add-repo-form" class="inline-form" autocomplete="off">
         <label for="repo-url">Add a project</label>
