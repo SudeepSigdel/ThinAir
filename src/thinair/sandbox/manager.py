@@ -11,6 +11,7 @@ Cleanup: the container is removed in `finally`; cancellation kills it; the janit
 
 import asyncio
 import contextlib
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -46,7 +47,7 @@ def build_container_args(spec: SandboxSpec) -> dict[str, Any]:
         "user": SANDBOX_USER,
         "labels": {LABEL_MANAGED: "true", LABEL_JOB: spec.job_id},
         "detach": True,
-        "tty": False,
+        "tty": spec.tty,
         "stdin_open": spec.stdin,
         "privileged": False,
         "cap_drop": ["ALL"],
@@ -112,6 +113,78 @@ class StdinPipe:
                 with contextlib.suppress(OSError):
                     self._sock.close()
             self._sock = None
+
+
+class Terminal:
+    """A running sandbox with a terminal (from `SandboxManager.open_terminal`).
+
+    Docker attach with a TTY is one raw byte stream in each direction (no stdout/stderr
+    framing). Connected before the container starts, so nothing printed is missed. A daemon
+    thread does the blocking reads (socket timeouts are ignored by Docker Desktop's named pipe
+    on Windows), so `read(timeout_s)` never hangs. Blocking calls: use them from a thread.
+    `close()` kills and removes the container (idempotent).
+    """
+
+    def __init__(self, container: Container, sock: Any) -> None:
+        self.container = container
+        self._sock = sock
+        self._lock = threading.Lock()
+        self._closed = False
+        self._chunks: queue.Queue[bytes] = queue.Queue()
+        self._ended = False
+        threading.Thread(target=self._pump, daemon=True, name="thinair-terminal").start()
+
+    def _pump(self) -> None:
+        try:
+            while True:
+                chunk = self._sock.recv(65536)
+                if not chunk:
+                    break
+                self._chunks.put(chunk)
+        except Exception:  # noqa: S110, BLE001 - socket closed or broken: the stream ended
+            pass
+        self._chunks.put(b"")
+
+    def read(self, timeout_s: float = 1.0) -> bytes | None:
+        """Up to 64 KiB of output; None if nothing arrived in time; b"" once the stream ended."""
+        if self._ended:
+            return b""
+        try:
+            chunk = self._chunks.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
+        if not chunk:
+            self._ended = True
+        return chunk
+
+    def write(self, data: bytes) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            try:
+                self._sock.sendall(data)
+                return True
+            except OSError:
+                return False
+
+    def exit_code(self) -> int | None:
+        """The process's exit code once it has stopped, else None."""
+        try:
+            self.container.reload()
+        except (DockerException, requests.exceptions.RequestException):
+            return None
+        state = self.container.attrs.get("State", {})
+        return None if state.get("Running") else state.get("ExitCode")
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        with contextlib.suppress(OSError):
+            self._sock.close()
+        with contextlib.suppress(DockerException, requests.exceptions.RequestException):
+            self.container.remove(force=True, v=True)
 
 
 class _Handle:
@@ -334,6 +407,35 @@ class SandboxManager:
         await asyncio.sleep(0)  # let queued line callbacks flush
         return res, lines
 
+    # ---- terminals (agent logins) ----------------------------------------------------------
+    def open_terminal(self, spec: SandboxSpec) -> Terminal:
+        """Create a hardened container with a TTY, attach to it, then start it (blocking).
+
+        Same hardening and limits as `run`. Uses the attach call `StdinPipe` uses, so the socket
+        proxy needs no new permission (EXEC stays denied). The caller must `close()` it; the
+        janitor removes leftovers by their `thinair.managed` label after a crash.
+        """
+        if not (spec.tty and spec.stdin):
+            raise ValueError("open_terminal needs a spec with tty=True and stdin=True")
+        spec = self.fit(spec)
+        try:
+            container = self.client.containers.create(**build_container_args(spec))
+        except ImageNotFound as e:
+            raise SandboxError(f"Image {spec.image!r} not found. Build or pull it first.") from e
+        except (APIError, requests.exceptions.RequestException) as e:
+            raise SandboxError(f"Could not create sandbox: {e}") from e
+        try:
+            sock = container.attach_socket(
+                params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1}
+            )
+            term = Terminal(container, getattr(sock, "_sock", sock))
+            container.start()
+        except (APIError, requests.exceptions.RequestException, OSError) as e:
+            with contextlib.suppress(DockerException, requests.exceptions.RequestException):
+                container.remove(force=True, v=True)
+            raise SandboxError(f"Could not start the sandbox's terminal: {e}") from e
+        return term
+
     # ---- running -------------------------------------------------------------------------
     async def run(
         self,
@@ -363,6 +465,8 @@ class SandboxManager:
     ) -> SandboxResult:
         if stdin is not None and not spec.stdin:
             raise ValueError("a StdinPipe needs a spec with stdin=True")
+        if spec.tty:
+            raise ValueError("specs with tty=True run through open_terminal()")
         spec = self.fit(spec)
         handle = handle or _Handle()
         container: Container | None = None

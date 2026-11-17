@@ -40,6 +40,42 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _regex(v: str | None) -> str | None:
+    if v is not None:
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise ValueError(f"not a valid regular expression: {e}") from e
+    return v
+
+
+class LoginFlow(_Strict):
+    """Sign in from the phone (docs/agents.md "In-app login"): Thinair runs `command` in a
+    terminal inside the agent's login container and relays only the sign-in link and a one-time
+    code. Patterns match the output with terminal colours/links removed."""
+
+    command: list[str] = Field(min_length=1)
+    url: str  # the sign-in link (first match; group 1 if the pattern has one)
+    # Only links to these hosts become tappable (https only); anything else is shown as text.
+    url_hosts: list[str] = Field(min_length=1)
+    code_out: str | None = None  # a code the user types at the provider (device-code logins)
+    code_in: str | None = None  # the prompt where the user pastes the provider's code
+    help: str | None = None  # one line shown on the sign-in screen
+
+    @field_validator("url", "code_out", "code_in")
+    @classmethod
+    def _patterns(cls, v: str | None) -> str | None:
+        return _regex(v)
+
+    @field_validator("url_hosts")
+    @classmethod
+    def _hosts(cls, v: list[str]) -> list[str]:
+        bad = [h for h in v if not _HOST.match(h) or h.startswith("*.")]
+        if bad:
+            raise ValueError(f"invalid host names: {bad} (exact names only)")
+        return [h.lower() for h in v]
+
+
 class AuthConfig(_Strict):
     # The agent's persistent login lives in Docker volume `thinair-auth-<id>`, mounted here.
     config_dir: str = "/thinair-auth"
@@ -53,6 +89,7 @@ class AuthConfig(_Strict):
     shares_login_with: str | None = None
     hint: str = "Log in with `thinair auth {id}`."
     login_help: str = "Complete the agent's login, then exit it."  # shown by `thinair auth`
+    login_flow: LoginFlow | None = None  # sign in from the phone; None = terminal only
 
     @field_validator("config_dir")
     @classmethod

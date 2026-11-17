@@ -303,7 +303,9 @@ def _agents(mgr) -> list[Check]:  # noqa: ANN001
                 "warn",
                 "Agent logins",
                 "no agent has been logged in yet (profiles work without one)",
-                "For agent tasks: `thinair auth claude --print-command` (or codex, gemini).",
+                "For agent tasks: sign Claude Code or Codex in on the Agents screen of the app"
+                " (no terminal needed), or run `thinair auth claude --print-command`"
+                " (or codex, gemini).",
             )
         )
     return out

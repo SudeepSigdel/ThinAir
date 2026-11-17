@@ -1548,3 +1548,42 @@ Real Oracle VM test (2026-11-14, Ubuntu on Ampere A1, phase-1 image built on the
 - Bug found and fixed: `THINAIR_PHONE=public` on a Tailscale install failed because `tailscale
   serve` holds the tailnet address:443, so Docker can't publish 0.0.0.0:443. The installer now
   turns that handler off first and restores it if public mode fails.
+
+### Phase 2: Sign in to the agent from the phone (2026-11-14, branch `onboarding-v2/phase-2-agent-login`)
+
+Shipped:
+- `SandboxSpec.tty` + `SandboxManager.open_terminal` / `Terminal` (attach before start; reads in a
+  thread because Docker Desktop's Windows named pipe ignores socket timeouts).
+- `agents/login.py`: `FlowMachine` (pure), `LoginSession`, `LoginHub`, `DockerLoginBackend`.
+  `login_flow` on `claude` and `codex` (Claude Code (ACP) signs in through Claude Code's flow).
+- `api/login_api.py`: `POST /api/agents/{id}/login`, `GET /api/agent-logins/{sid}` (+ `/events`
+  SSE), `POST .../input`, `DELETE`, `POST /api/agents/{id}/login/check`; `GET /api/agents` gains
+  `login: {in_app, state}`. All behind `require_auth`; no new open route.
+- UI: header link **Agents** (`#/agents`) and the O3 sign-in screen (`#/agent/<id>/login`);
+  a job that failed with `agent_not_authenticated` links to it. Doctor's fix text and the agents'
+  hints point to the Agents screen.
+
+[verify in build] results:
+- `claude auth login` in a PTY (2.1.311): line-based (no `pyte`), prints `visit: <link>` (OSC 8
+  + coloured copy) and `Paste code here if prompted > `. The link host is **`claude.com`**
+  (`/cai/oauth/authorize`), not `claude.ai` as planned; `code_challenge` + `S256` present. The
+  pinned binary exchanges the code at `platform.claude.com/v1/oauth/token` and calls
+  `api.anthropic.com` (strings in the binary), both already on the egress allowlist.
+- `codex login --device-auth` (0.166.0): `https://auth.openai.com/codex/device` + a code like
+  `ABCD-EFGH1` ("expires in 15 minutes"); contacts auth.openai.com; exits 0 when saved.
+- TTY attach through tecnativa/docker-socket-proxy: works with the existing permissions (real
+  server on the Oracle ARM VM: both CLIs reached the link, cancel removed the containers).
+
+Deviations from the plan:
+- No `success` regex: the exit code plus `check_command` decide (more reliable than text).
+- States add `cancelled`; `GET /api/agent-logins/{sid}` added (the screen renders from GET or SSE,
+  same payload). A server-wide cap of 3 sessions (429 `too_many_logins`) on top of one per user.
+- The O3 screen lives at `#/agent/<id>/login` behind a new Agents screen, because Settings and
+  the setup flow arrive in phases 4 and 6; they will link to the same route.
+- `login.state` comes from sign-ins and explicit checks only; a job failing with
+  `agent_not_authenticated` doesn't update it yet (follow-up).
+
+Follow-ups:
+- Owner's manual test: complete a real Claude Code and Codex sign-in from the phone, then run a
+  task (below). Not possible in automation (never a real account).
+- Phase 4: setup step 2 reuses `#/agent/<id>/login`; mark the job-failure state in `known`.

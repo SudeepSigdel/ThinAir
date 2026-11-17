@@ -557,8 +557,10 @@ def get_patch(job_id: str, who: Principal = Depends(require_auth)) -> Response:
 
 # ---- agents --------------------------------------------------------------------------------
 @router.get("/agents", tags=["agents"])
-def list_agents() -> list[dict[str, Any]]:
+def list_agents(request: Request, who: Principal = Depends(require_auth)) -> list[dict[str, Any]]:
     """Configured coding agents (built-in plus `$THINAIR_DATA_DIR/agents/*.yaml`)."""
+    from thinair.api.login_api import login_info
+
     agents, _errors = load_agents(agents_dir())
     return [
         {
@@ -568,6 +570,8 @@ def list_agents() -> list[dict[str, Any]]:
             "login_hint": a.auth_hint,
             # ACP agents can hold a conversation (replies and approvals while they work).
             "conversational": a.protocol == "acp",
+            # Sign in from the app (in_app) and the last known state: ok|missing|unknown.
+            "login": login_info(request, agents, a, who),
         }
         for a in agents.values()
     ]
