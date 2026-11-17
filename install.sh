@@ -174,7 +174,12 @@ wait_healthy() {
   until docker compose exec -T thinair python -c \
     "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz')" >/dev/null 2>&1; do
     i=$((i + 1))
-    [ "$i" -le 45 ] || die "Thinair did not come up. See: cd $DIR && docker compose logs thinair"
+    if [ "$i" -gt 45 ]; then
+      if docker compose logs --tail 200 thinair 2>&1 | grep -q "Can't locate revision"; then
+        die "This image is older than the data in $DIR (its database was upgraded by a newer Thinair). Use a newer image: remove THINAIR_VERSION from $DIR/.env (or set it to latest or a newer version), then run this installer again."
+      fi
+      die "Thinair did not come up. See: cd $DIR && docker compose logs thinair"
+    fi
     sleep 2
   done
 }
@@ -510,10 +515,14 @@ fi
 # ---- images and start -------------------------------------------------------------------------
 [ -n "${THINAIR_VERSION:-}" ] && export THINAIR_VERSION
 IMAGE="$IMAGE_NAME:${THINAIR_VERSION:-latest}"
+case "${THINAIR_VERSION:-$(env_value THINAIR_VERSION)}" in
+  local) say "Note: THINAIR_VERSION=local uses an image built on this machine, not the released one." ;;
+esac
 step "Downloading the images (first time: about 100 MB)"
 if ! docker compose -f "$COMPOSE_FILE_NAME" pull; then
   if docker image inspect "$IMAGE" >/dev/null 2>&1; then
     say "Could not download updates; using the image already on this machine ($IMAGE)."
+    say "  Built: $(docker image inspect -f '{{.Created}}' "$IMAGE" 2>/dev/null | cut -c1-10). If this is older than you expect, fix the download and run this again."
   else
     die "Could not download $IMAGE. Check your internet connection and run this again."
   fi
