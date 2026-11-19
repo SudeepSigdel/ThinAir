@@ -191,8 +191,11 @@ class JobService:
         setup_state.mark("first_job", user_id)
         return self._enqueue(job)
 
-    def submit_pr(self, agent_job_id: str) -> Job:
-        """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible."""
+    def submit_pr(
+        self, agent_job_id: str, *, title: str | None = None, body: str | None = None
+    ) -> Job:
+        """Queue a `pr` job for a finished agent job. Raises PRError if that isn't possible.
+        `title`/`body` are the person's own text; None = generate it from the change."""
         from thinair.db.models import JobResult
         from thinair.jobs.pr import PRError, check_pr_possible, require_credentials
         from thinair.users import github_allowed, job_user, too_many_jobs
@@ -230,6 +233,8 @@ class JobService:
                 ref=parent.ref,
                 commit_sha=parent.commit_sha,
                 user_id=parent.user_id,
+                pr_title=title,
+                pr_body=body,
             )
             s.add(job)
             s.commit()

@@ -14,7 +14,9 @@ Repo code never runs here: hooks are disabled and no install or test step exists
 import asyncio
 import contextlib
 import io
+import re
 import tarfile
+from dataclasses import dataclass
 
 from thinair.db.models import Job, JobKind, JobResult, JobStatus, Repo
 from thinair.db.session import session_scope
@@ -102,17 +104,141 @@ async def _credential(access: GitHubAccess, url: str, need: str) -> Credential:
     return cred
 
 
-def pr_title(task: str | None) -> str:
-    line = next((ln.strip() for ln in (task or "").splitlines() if ln.strip()), "")
-    line = " ".join(line.split()) or "Changes from Thinair"
-    return line if len(line) <= 72 else line[:71].rstrip() + "…"
+@dataclass(frozen=True)
+class FileChange:
+    path: str
+    kind: str  # added | modified | deleted | renamed
+    added: int = 0
+    removed: int = 0
+    binary: bool = False
+    old_path: str | None = None
 
 
-def pr_body(task: str | None, summary: str | None, agent_job_id: str) -> str:
-    parts = ["## Task", (task or "").strip()[:4000]]
+_GIT_HEADER = re.compile(r"^diff --git a/(.*) b/(.*)$")
+_VERBS = {"added": "Add", "modified": "Update", "deleted": "Delete", "renamed": "Rename"}
+_PAST = {"added": "Added", "modified": "Updated", "deleted": "Deleted", "renamed": "Renamed"}
+MAX_LISTED = 25
+
+
+def parse_changes(patch: bytes | str | None) -> list[FileChange]:
+    """What the patch does, per file. Counting is hunk-aware: header lines (`---`/`+++`) come
+    before the first `@@`, so a removed line that starts with `-- ` is never mistaken for one."""
+    if not patch:
+        return []
+    text = patch.decode("utf-8", "replace") if isinstance(patch, bytes) else patch
+    out: list[FileChange] = []
+    cur: dict | None = None
+
+    def close() -> None:
+        if cur is not None:
+            out.append(FileChange(**cur))
+
+    in_hunk = False
+    for line in text.split("\n"):
+        m = _GIT_HEADER.match(line) if not in_hunk or line.startswith("diff --git ") else None
+        if m:
+            close()
+            cur = {"path": m.group(2), "kind": "modified", "old_path": None}
+            cur.update(added=0, removed=0, binary=False)
+            in_hunk = False
+        elif cur is None:
+            continue
+        elif in_hunk:
+            if line.startswith("+"):
+                cur["added"] += 1
+            elif line.startswith("-"):
+                cur["removed"] += 1
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif line.startswith("new file mode"):
+            cur["kind"] = "added"
+        elif line.startswith("deleted file mode"):
+            cur["kind"] = "deleted"
+        elif line.startswith("rename from "):
+            cur["kind"], cur["old_path"] = "renamed", line[len("rename from ") :]
+        elif line.startswith("rename to "):
+            cur["path"] = line[len("rename to ") :]
+        elif line.startswith(("Binary files ", "GIT binary patch")):
+            cur["binary"] = True
+    close()
+    return out
+
+
+def _common_dir(paths: list[str]) -> str:
+    parts = [p.split("/")[:-1] for p in paths]
+    shared: list[str] = []
+    for level in zip(*parts, strict=False):
+        if len(set(level)) != 1:
+            break
+        shared.append(level[0])
+    return "/".join(shared)
+
+
+def pr_title(patch: bytes | str | None) -> str:
+    """Describes the change itself (what files, what kind), not the prompt that asked for it."""
+    files = parse_changes(patch)
+    if not files:
+        return "Changes from Thinair"
+    kinds = {f.kind for f in files}
+    verb = _VERBS[kinds.pop()] if len(kinds) == 1 else "Change"
+    names = [f.path.rsplit("/", 1)[-1] for f in files]
+    if len(files) == 1 and files[0].kind == "renamed" and files[0].old_path:
+        title = f"Rename {files[0].old_path.rsplit('/', 1)[-1]} to {names[0]}"
+    elif len(files) == 1:
+        title = f"{verb} {names[0]}"
+    elif len(files) == 2:
+        title = f"{verb} {names[0]} and {names[1]}"
+    else:
+        where = _common_dir([f.path for f in files])
+        title = f"{verb} {len(files)} files" + (f" in {where}" if where else "")
+    return title if len(title) <= 72 else title[:71].rstrip() + "…"
+
+
+MAX_TITLE = 256  # GitHub's limit
+MAX_BODY = 20_000
+
+
+def clean_title(text: str | None) -> str | None:
+    """A typed title on one line; blank = use the generated one."""
+    line = " ".join((text or "").split())
+    return line[:MAX_TITLE] or None
+
+
+def clean_body(text: str | None) -> str | None:
+    """A typed description as-is (trimmed); None = use the generated one, "" = really empty."""
+    if text is None:
+        return None
+    return text.replace("\r\n", "\n").strip()[:MAX_BODY]
+
+
+def _tick(path: str) -> str:
+    return "`" + path.replace("`", "'") + "`"
+
+
+def pr_body(patch: bytes | str | None, summary: str | None, agent_job_id: str) -> str:
+    """A reviewer's view: the files and their size first; the agent's own words, if any, are
+    folded away at the end. The original prompt is deliberately left out."""
+    files = parse_changes(patch)
+    parts: list[str] = []
+    if files:
+        added, removed = sum(f.added for f in files), sum(f.removed for f in files)
+        noun = "file" if len(files) == 1 else "files"
+        parts += [f"## Changes\n\n{len(files)} {noun} changed, +{added} / -{removed}."]
+        lines = []
+        for f in files[:MAX_LISTED]:
+            size = "binary" if f.binary else f"+{f.added} / -{f.removed}"
+            name = (
+                f"{_tick(f.old_path)} → {_tick(f.path)}"
+                if f.kind == "renamed" and f.old_path
+                else _tick(f.path)
+            )
+            lines.append(f"- {_PAST[f.kind]} {name} ({size})")
+        if len(files) > MAX_LISTED:
+            lines.append(f"- … and {len(files) - MAX_LISTED} more")
+        parts.append("\n".join(lines))
     if summary and summary.strip():
-        parts += ["## Summary", summary.strip()[:8000]]
-    parts += [f"Opened from Thinair job `{agent_job_id}`."]
+        parts.append("## Notes from the agent\n\n" + summary.strip()[:8000])
+    parts.append(f"Opened from Thinair job `{agent_job_id}`.")
     return "\n\n".join(parts)
 
 
@@ -272,8 +398,12 @@ async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult
         assert result.patch is not None and parent.commit_sha is not None
         owner, name = repo_slug(repo.url)
         branch = pr_branch(parent.id)
-        title = pr_title(parent.task)
-        body = pr_body(parent.task, result.summary, parent.id)
+        title = job.pr_title or pr_title(result.patch)
+        body = (
+            job.pr_body
+            if job.pr_body is not None
+            else pr_body(result.patch, result.summary, parent.id)
+        )
 
         # The push container gets a Contents:write key and nothing else. The Pull requests:write
         # key is separate and never leaves this process (it is not in any SandboxSpec).

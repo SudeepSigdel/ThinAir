@@ -173,6 +173,10 @@ class Job(SQLModel, table=True):
     ask_permissions: bool = False
     # For `pr` jobs: the agent job whose patch is turned into a pull request.
     parent_job_id: str | None = Field(default=None, foreign_key="job.id", index=True)
+    # For `pr` jobs: what the person typed on the phone. None = Thinair's generated text
+    # (a blank body is a real choice: an empty description).
+    pr_title: str | None = None
+    pr_body: str | None = None
     # Who the job belongs to (and acts as: agent login, GitHub token policy). None = the owner.
     user_id: str | None = Field(default=None, foreign_key="user.id", index=True)
     # The remote runner that ran this job (None = this server).
