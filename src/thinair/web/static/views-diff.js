@@ -179,12 +179,11 @@ async function renderChangesBar(id, job, r) {
           b.disabled = true;
           showError("changes-error", "");
           try {
-            const pj = await api(`/api/jobs/${id}/pr`, { method: "POST" });
-            location.hash = `#/job/${pj.id}`;
+            await openPrEditor(id);
           } catch (e) {
-            b.disabled = false;
             if (!(e instanceof AuthError)) showError("changes-error", e.message);
           }
+          b.disabled = false;
         });
         bar.append(b, patch);
       }

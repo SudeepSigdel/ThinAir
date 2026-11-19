@@ -12,7 +12,14 @@ from thinair.config import get_settings
 from thinair.db.models import Job, JobKind, JobResult
 from thinair.db.session import session_scope
 from thinair.github import GitHubAPIError, GitHubClient, repo_slug
-from thinair.jobs.pr import pr_body, pr_branch, pr_title
+from thinair.jobs.pr import (
+    clean_body,
+    clean_title,
+    parse_changes,
+    pr_body,
+    pr_branch,
+    pr_title,
+)
 from thinair.jobs.service import ExecResult, JobContext
 
 ADMIN = "t" * 32
@@ -23,18 +30,61 @@ PATCH = b"diff --git a/x b/x\n"
 
 
 # ---- pure helpers ----------------------------------------------------------------------------
-def test_title_is_first_task_line_trimmed() -> None:
-    assert pr_title("  fix   the\tflaky test \n\nmore detail") == "fix the flaky test"
-    assert pr_title("") == "Changes from Thinair"
-    long = pr_title("x" * 200)
-    assert len(long) == 72 and long.endswith("…")
+def _file(path: str, body: str, head: str = "") -> str:
+    return (
+        f"diff --git a/{path} b/{path}\n{head}--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n{body}"
+    )
 
 
-def test_body_has_task_summary_and_no_attribution_trailer() -> None:
-    body = pr_body("fix it", "Fixed.", "job1")
-    assert "## Task\n\nfix it" in body and "## Summary\n\nFixed." in body and "`job1`" in body
-    assert "co-authored" not in body.lower()
-    assert "## Summary" not in pr_body("fix it", "  ", "job1")
+EDIT = _file("src/app/a.py", "-old\n+new\n-- sql comment\n ctx\n")
+NEW = (
+    "diff --git a/src/app/b.py b/src/app/b.py\nnew file mode 100644\n"
+    "--- /dev/null\n+++ b/src/app/b.py\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+)
+GONE = "diff --git a/old.txt b/old.txt\ndeleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+MOVE = "diff --git a/a/x.py b/b/y.py\nsimilarity index 100%\nrename from a/x.py\nrename to b/y.py\n"
+BIN = (
+    "diff --git a/i.png b/i.png\nnew file mode 100644\nBinary files /dev/null and b/i.png differ\n"
+)
+
+
+def test_changes_are_counted_per_file() -> None:
+    files = {f.path: f for f in parse_changes((EDIT + NEW + GONE + MOVE + BIN).encode())}
+    assert (files["src/app/a.py"].added, files["src/app/a.py"].removed) == (1, 2)  # "-- sql" counts
+    assert files["src/app/b.py"].kind == "added" and files["src/app/b.py"].added == 2
+    assert files["old.txt"].kind == "deleted" and files["old.txt"].removed == 1
+    assert files["b/y.py"].kind == "renamed" and files["b/y.py"].old_path == "a/x.py"
+    assert files["i.png"].binary
+    assert parse_changes(None) == [] and parse_changes(b"") == []
+
+
+def test_title_describes_the_change_not_the_prompt() -> None:
+    assert pr_title(EDIT) == "Update a.py"
+    assert pr_title(NEW) == "Add b.py"
+    assert pr_title(MOVE) == "Rename x.py to y.py"
+    assert pr_title(EDIT + NEW) == "Change a.py and b.py"
+    assert pr_title(
+        EDIT + _file("src/app/c.py", "-a\n+b\n") + _file("src/app/d.py", "-a\n+b\n")
+    ) == ("Update 3 files in src/app")
+    assert pr_title(EDIT + GONE + NEW).startswith("Change 3 files")
+    assert pr_title(None) == pr_title(b"garbage") == "Changes from Thinair"
+    many = "".join(_file(f"dir/{'x' * 80}{i}/f.py", "-a\n+b\n") for i in range(3))
+    assert len(pr_title(many)) <= 72
+
+
+def test_body_lists_files_folds_agent_notes_and_leaves_out_the_prompt() -> None:
+    body = pr_body(EDIT + NEW, "I fixed it.", "job1")
+    assert "2 files changed, +3 / -2." in body
+    assert (
+        "- Updated `src/app/a.py` (+1 / -2)" in body and "- Added `src/app/b.py` (+2 / -0)" in body
+    )
+    assert "## Notes from the agent\n\nI fixed it." in body and "`job1`" in body
+    assert body.index("## Changes") < body.index("## Notes from the agent")
+    assert "## Task" not in body and "co-authored" not in body.lower()
+    assert "Notes from the agent" not in pr_body(EDIT, "  ", "job1")
+    assert "1 file changed" in pr_body(EDIT, None, "job1")
+    big = pr_body("".join(_file(f"f{i}.py", "+a\n") for i in range(30)), None, "j")
+    assert "… and 5 more" in big
 
 
 def test_branch_and_slug() -> None:
@@ -132,6 +182,7 @@ class Fakes:
     def __init__(self) -> None:
         self.patch: bytes | None = PATCH
         self.pr_calls: list[str] = []
+        self.pr_text: list[tuple[str | None, str | None]] = []
         self.pr_fail = False
 
     async def agent(self, ctx: JobContext, _mgr) -> ExecResult:
@@ -147,6 +198,7 @@ class Fakes:
         from thinair.db.models import JobStatus
 
         self.pr_calls.append(ctx.job.parent_job_id)
+        self.pr_text.append((ctx.job.pr_title, ctx.job.pr_body))
         if self.pr_fail:
             return ExecResult(JobStatus.FAILED, "push_failed", "GitHub refused the push.")
         url = "https://github.com/octo/demo/pull/1"
@@ -275,3 +327,49 @@ async def test_real_pr_executor_fails_cleanly_without_a_token(monkeypatch, engin
     ctx = JobContext(job=job, repo=None, events=EventStore())  # type: ignore[arg-type]
     res = await pr_executor(ctx, object())  # type: ignore[arg-type]
     assert res.error_code == "pr_needs_token"
+
+
+def test_draft_is_generated_from_the_change(client) -> None:
+    aid = agent_job(client)
+    d = client.get(f"/api/jobs/{aid}/pr/draft").json()
+    assert d["title"] == "Update x" and "## Changes" in d["body"]
+    assert "fix the tests" not in d["body"]
+    assert client.get("/api/jobs/nope/pr/draft").status_code == 404
+
+
+def test_draft_needs_a_change(client, fakes) -> None:
+    fakes.patch = None
+    r = client.get(f"/api/jobs/{agent_job(client)}/pr/draft")
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "no_patch"
+
+
+def test_typed_title_and_description_reach_the_pr_job(client, fakes) -> None:
+    fakes.pr_fail = True
+    aid = agent_job(client)
+    typed = {"title": "  Fix   the\nflaky test ", "body": "Why: it raced.\r\n\r\n"}
+    prj = client.post(f"/api/jobs/{aid}/pr", json=typed).json()
+    finished(client, prj["id"])
+    assert fakes.pr_text == [("Fix the flaky test", "Why: it raced.")]
+    fakes.pr_fail = False  # a retry keeps what was typed
+    retry = client.post(f"/api/jobs/{prj['id']}/retry").json()
+    finished(client, retry["id"])
+    assert fakes.pr_text[-1] == ("Fix the flaky test", "Why: it raced.")
+
+
+def test_blank_title_means_generated_and_blank_body_means_empty(client, fakes) -> None:
+    aid = agent_job(client)
+    prj = client.post(f"/api/jobs/{aid}/pr", json={"title": "  ", "body": ""}).json()
+    finished(client, prj["id"])
+    assert fakes.pr_text == [(None, "")]
+
+
+def test_no_body_means_everything_generated(client, fakes) -> None:
+    aid = agent_job(client)
+    finished(client, client.post(f"/api/jobs/{aid}/pr").json()["id"])
+    assert fakes.pr_text == [(None, None)]
+
+
+def test_clean_helpers_cap_and_normalise() -> None:
+    assert clean_title("x" * 999) == "x" * 256 and clean_title(" \n ") is None
+    assert clean_body(None) is None and clean_body("") == ""
+    assert clean_body("a\r\nb  \n") == "a\nb" and len(clean_body("y" * 99_999)) == 20_000
