@@ -22,7 +22,7 @@ test deterministic", and watch Claude Code work. When it finishes, review the di
 
 ## Status
 
-Early, working MVP (phase 1). Working and tested: resource profiles, Claude Code agent tasks,
+Early but past the MVP (phases 1 to 4 done). Working and tested: resource profiles, Claude Code agent tasks,
 live logs, the mobile web app (installable as a PWA), token auth, Docker Compose install.
 Private GitHub repositories and opening pull requests work after two taps on **Connect GitHub** (see below).
 Telegram notifications tell you when a job finishes. Built-in agents: Claude Code, Codex and
@@ -591,6 +591,11 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
 - **Phase 3:** outbound allowlist for agent runs (done for Claude Code), Postgres (done),
   multiple users (done), Agent Client Protocol (ACP) adapter (done), remote runners (done,
   profile jobs).
+- **Phase 4:** projects with per-project defaults and a dependency cache, agents from the ACP
+  registry, conversations (reply and approve from the phone), and an installer that sets up
+  Docker, Tailscale and Oracle Cloud machines (all done).
+- **Onboarding:** QR pairing, agent sign-in from the phone, Connect GitHub, a guided first run,
+  Web Push notifications and a phone-first diff review (done).
 
 ## Contributing
 
