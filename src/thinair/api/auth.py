@@ -33,6 +33,12 @@ _FAIL_LIMIT, _FAIL_WINDOW = 10, 60.0
 _MAX_KEYS = 10_000
 STRONG_TOKEN_LEN = 32
 _failures: dict[str, deque[float]] = defaultdict(deque)
+# Backstop that does not depend on knowing who the client is: if a client can choose its own
+# address for every request (a proxy setting that believes forged X-Forwarded-For), the per-address
+# counts never fill. Failures from ALL addresses are counted too; past this many in a minute,
+# short tokens are refused unchecked, exactly as for a throttled address.
+_GLOBAL_FAIL_LIMIT = 200
+_ALL = "*"  # reserved key in `_failures`: every failure, whoever it came from
 
 
 def _client_key(request: Request) -> str:
@@ -61,13 +67,26 @@ def _throttled(key: str) -> bool:
     return len(q) >= _FAIL_LIMIT
 
 
+def _flooded() -> bool:
+    q = _failures.get(_ALL)
+    if not q:
+        return False
+    cutoff = time.monotonic() - _FAIL_WINDOW
+    while q and q[0] < cutoff:
+        q.popleft()
+    return len(q) >= _GLOBAL_FAIL_LIMIT
+
+
 def record_failure(key: str) -> None:
+    everyone = _failures[_ALL]
+    if len(everyone) < _GLOBAL_FAIL_LIMIT * 2:  # bounded
+        everyone.append(time.monotonic())
     if key not in _failures and len(_failures) >= _MAX_KEYS:
         cutoff = time.monotonic() - _FAIL_WINDOW
-        for k in [k for k, q in _failures.items() if not q or q[-1] < cutoff]:
+        for k in [k for k, q in _failures.items() if k != _ALL and (not q or q[-1] < cutoff)]:
             del _failures[k]
         if len(_failures) >= _MAX_KEYS:  # still full: forget the oldest addresses
-            for k in list(_failures)[: _MAX_KEYS // 10]:
+            for k in [k for k in _failures if k != _ALL][: _MAX_KEYS // 10]:
                 del _failures[k]
     _failures[key].append(time.monotonic())
 
@@ -115,7 +134,7 @@ def require_auth(
 
 def _check(request: Request, token: str) -> Principal:
     key = _client_key(request)
-    throttled = _throttled(key)
+    throttled = _throttled(key) or _flooded()
     if throttled and len(token) < STRONG_TOKEN_LEN:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
     who = _principal(token)
@@ -172,7 +191,7 @@ def pair(body: PairBody, request: Request, response: Response) -> None:
     from thinair.pairing import redeem
 
     key = _client_key(request)
-    if _throttled(key):
+    if _throttled(key) or _flooded():
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed attempts; wait.")
     with session_scope() as session:
         token = redeem(session, body.code.strip())

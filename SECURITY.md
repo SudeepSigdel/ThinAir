@@ -92,8 +92,11 @@ agents) inside Docker containers.
   static shell, `/healthz`, login and pairing answer without a token; the API docs and schema
   need a login (`THINAIR_API_DOCS`). HTTPS responses carry HSTS (without `includeSubDomains`:
   other people own the sibling names under sslip.io). The failed-login throttle counts the real
-  client address: `X-Forwarded-For` is believed only from `THINAIR_TRUSTED_PROXIES` (loopback and
-  private ranges, where Caddy sits), and Caddy discards that header when a client sends it.
+  client address: `X-Forwarded-For` is believed only from `THINAIR_TRUSTED_PROXIES`: loopback
+  only by default, plus the private ranges (where Caddy sits) once Caddy is configured with
+  `THINAIR_DOMAIN`. Caddy discards that header when a client sends it, and `thinair doctor` warns if
+  the app's own port is then also published publicly. As a backstop, failures from all addresses
+  are counted together, so inventing a new address per request does not defeat the throttle.
 - GitHub tokens are treated as opaque (GitHub App tokens can be ~520 characters with dots) but
   must be printable ASCII without whitespace, so they can't inject or split HTTP headers. Output
   is masked before long lines are cut, so a cut never reveals part of a secret.

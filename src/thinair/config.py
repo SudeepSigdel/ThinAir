@@ -7,6 +7,9 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LOOPBACK = "127.0.0.1,::1"
+PRIVATE_RANGES = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="THINAIR_", env_file=".env", extra="ignore")
@@ -35,10 +38,8 @@ class Settings(BaseSettings):
     # when outgoing traffic leaves through another address. Then nothing looks it up.
     public_ip: str | None = None
     # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed (comma-separated
-    # addresses or CIDRs). Behind Caddy that makes the failed-login throttle count each real
-    # client instead of Caddy's one address. The default covers loopback and private ranges
-    # (Compose networks); a client on the public internet can never spoof its address.
-    trusted_proxies: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+    # addresses or CIDRs). Blank = automatic, see `effective_trusted_proxies`.
+    trusted_proxies: str = ""
     # /docs, /redoc and /openapi.json: "auth" = only after logging in (the default, since the
     # server may be on the internet), "open" = for anyone, "off" = not served.
     api_docs: Literal["auth", "open", "off"] = "auth"
@@ -119,6 +120,19 @@ class Settings(BaseSettings):
     # Optional external database, e.g. postgresql+psycopg://user:pass@host/thinair (needs the
     # `postgres` extra). Default: one SQLite file in data_dir, which suits a single small server.
     database_url: SecretStr | None = None
+
+    @property
+    def effective_trusted_proxies(self) -> str:
+        """Whose forwarded headers are believed. An explicit THINAIR_TRUSTED_PROXIES wins.
+        Otherwise: loopback only, plus the private ranges (Compose networks, where Caddy sits)
+        when Caddy is configured (THINAIR_DOMAIN). Never the private ranges by default: with the
+        port published directly, Docker's userland proxy, IPv6 publishing and rootless Docker show
+        every client as the bridge gateway, and its X-Forwarded-For would be believed."""
+        if self.trusted_proxies.strip():
+            return self.trusted_proxies.strip()
+        if self.domain:
+            return LOOPBACK + "," + PRIVATE_RANGES
+        return LOOPBACK
 
     @property
     def db_url(self) -> str:
