@@ -23,7 +23,8 @@
 #                     answer those questions in advance (default: ask; no terminal = no)
 set -eu
 
-RAW_URL="${THINAIR_RAW_URL:-https://raw.githubusercontent.com/SudeepSigdel/ThinAir/main}"
+REPO_RAW="https://raw.githubusercontent.com/SudeepSigdel/ThinAir"
+RAW_URL="${THINAIR_RAW_URL:-$REPO_RAW/main}"
 IMAGE_NAME="${THINAIR_IMAGE:-ghcr.io/sudeepsigdel/thinair}"
 MODE=server
 case "${1:-}" in
@@ -57,6 +58,24 @@ fetch() { # url file (file:// works too, for offline installs and tests)
   else
     die "Neither curl nor wget is installed."
   fi
+}
+
+release_tag() { # the tag of the release being installed (v1.2.3), or nothing: then main is used
+  # `main` can be ahead of the last release, and its compose file may need a newer image than the
+  # one that gets pulled. So the compose file comes from the tag that matches the image.
+  [ -z "${THINAIR_RAW_URL:-}" ] || return 0 # an explicit source (offline install, tests) wins
+  rt_version="${THINAIR_VERSION:-$(env_value THINAIR_VERSION)}"
+  case "$rt_version" in
+    [0-9]*.[0-9]*.[0-9]*) printf 'v%s' "$rt_version" ;;
+    "" | latest)
+      # GitHub redirects /releases/latest to /releases/tag/<tag>: no API call, no rate limit.
+      command -v curl >/dev/null 2>&1 || return 0
+      rt_url="$(curl -fsSL -o /dev/null -w '%{url_effective}'         https://github.com/SudeepSigdel/ThinAir/releases/latest 2>/dev/null)" || return 0
+      case "${rt_url##*/}" in
+        v[0-9]*.[0-9]*.[0-9]*) printf '%s' "${rt_url##*/}" ;;
+      esac
+      ;;
+  esac
 }
 
 has_tty() { # a terminal we can really open (-r alone is not enough: it can exist but fail)
@@ -466,8 +485,13 @@ umask 077 # settings files hold secrets
 
 # ---- files ------------------------------------------------------------------------------------
 step "Downloading $COMPOSE_FILE_NAME into $DIR"
-fetch "$RAW_URL/$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new" ||
-  die "Could not download $RAW_URL/$COMPOSE_FILE_NAME"
+tag="$(release_tag)"
+if [ -n "$tag" ] && fetch "$REPO_RAW/$tag/$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new" 2>/dev/null; then
+  say "Using the $COMPOSE_FILE_NAME of release $tag (the one that matches the image)"
+else
+  fetch "$RAW_URL/$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new" ||
+    die "Could not download $RAW_URL/$COMPOSE_FILE_NAME"
+fi
 if [ -f "$COMPOSE_FILE_NAME" ] && ! cmp -s "$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.new"; then
   cp "$COMPOSE_FILE_NAME" "$COMPOSE_FILE_NAME.bak"
   say "Your previous $COMPOSE_FILE_NAME was saved as $COMPOSE_FILE_NAME.bak"

@@ -93,6 +93,50 @@ def test_existing_pull_is_reused_on_retry() -> None:
     assert s.calls[1][2]["params"] == {"head": "o:thinair/j", "state": "open"}
 
 
+def test_a_base_that_is_not_a_branch_falls_back_to_the_default_branch() -> None:
+    """Audit A10: the job's ref may be a tag or a commit, which GitHub refuses as a pull request
+    base (422, field `base`). That used to fail after the branch was already pushed. Only that
+    exact refusal falls back; anything else is reported as before."""
+    bad_base = Resp(
+        422,
+        {
+            "message": "Validation Failed",
+            "errors": [{"resource": "PullRequest", "field": "base", "code": "invalid"}],
+        },
+    )
+    s = Session(
+        bad_base,
+        Resp(200, {"default_branch": "trunk"}),
+        Resp(201, {"html_url": "https://github.com/o/r/pull/9"}),
+    )
+    gh = GitHubClient(GH_TOKEN, session=s)
+    url = gh.create_pull(
+        "o",
+        "r",
+        title="t",
+        body="b",
+        head="thinair/j",
+        base="v1.2.0",
+        fallback_base=lambda: gh.default_branch("o", "r"),
+    )
+    assert url == "https://github.com/o/r/pull/9"
+    assert s.calls[0][2]["json"]["base"] == "v1.2.0" and s.calls[2][2]["json"]["base"] == "trunk"
+
+    bad_head = Resp(
+        422,
+        {
+            "message": "Validation Failed",
+            "errors": [{"resource": "PullRequest", "field": "head", "code": "invalid"}],
+        },
+    )
+    s = Session(bad_head)
+    with pytest.raises(GitHubAPIError):
+        GitHubClient(GH_TOKEN, session=s).create_pull(
+            "o", "r", title="t", body="b", head="x", base="v1", fallback_base=lambda: "main"
+        )
+    assert len(s.calls) == 1  # no second attempt
+
+
 @pytest.mark.parametrize(
     ("status", "fragment"),
     [

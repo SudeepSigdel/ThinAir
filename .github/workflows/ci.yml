@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev
       - run: uv run ruff check .
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - run: uv export --frozen --no-hashes --all-extras --no-emit-project > requirements.audit.txt
       - run: uvx pip-audit -r requirements.audit.txt --no-deps --disable-pip
@@ -45,7 +45,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev --extra postgres
-      - run: uv run pytest -m docker
+      # These three modules are only exercised by the Docker tests. Measured 2026-11: 81% / 91% /
+      # 90% (86% together); the floor leaves room for ordinary change and catches a real drop.
+      - run: >-
+          uv run --with pytest-cov pytest -m docker
+          --cov=thinair.sandbox.manager --cov=thinair.agents.cli_adapter
+          --cov=thinair.project.prepare --cov-fail-under=80

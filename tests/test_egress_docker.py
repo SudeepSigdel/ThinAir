@@ -67,7 +67,11 @@ async def test_internal_network_reaches_only_allowlisted_hosts(mgr) -> None:
             )
             return " ".join(out)
 
-        assert (await fetch(f"https://{ALLOWED}/zen")).startswith("status 200")
+        reached = await fetch(f"https://{ALLOWED}/zen")
+        # GitHub rate-limits anonymous calls per address, and shared CI runners hit that. Its own
+        # "rate limit exceeded" answer still proves the tunnel carried the request (the proxy's
+        # refusal reads differently), so the test does not depend on the day's quota.
+        assert reached.startswith("status 200") or "rate limit exceeded" in reached, reached
         blocked = await fetch("https://example.com/")
         assert blocked.startswith("error") and "403" in blocked, blocked
         direct = await fetch(f"https://{ALLOWED}/zen", "direct")  # bypassing the proxy
