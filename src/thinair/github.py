@@ -210,10 +210,14 @@ _SLUG = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?
 class GitHubAPIError(Exception):
     """A GitHub API call failed. `message` is safe to show (never contains the token)."""
 
-    def __init__(self, status: int | None, message: str) -> None:
+    def __init__(
+        self, status: int | None, message: str, fields: tuple[tuple[str, str], ...] = ()
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        # GitHub's validation errors as (field, code), e.g. ("base", "invalid").
+        self.fields = fields
 
 
 def repo_slug(url: str) -> tuple[str, str]:
@@ -250,7 +254,7 @@ class GitHubClient:
         except requests.RequestException as e:
             raise GitHubAPIError(None, f"Could not reach GitHub: {type(e).__name__}") from None
         if resp.status_code >= 400:
-            raise GitHubAPIError(resp.status_code, _explain(resp, self._source))
+            raise GitHubAPIError(resp.status_code, _explain(resp, self._source), _fields(resp))
         return resp.json() if resp.content else None
 
     def default_branch(self, owner: str, repo: str) -> str:
@@ -265,10 +269,20 @@ class GitHubClient:
         return pulls[0]["html_url"] if pulls else None
 
     def create_pull(
-        self, owner: str, repo: str, *, title: str, body: str, head: str, base: str
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        fallback_base: "Callable[[], str] | None" = None,
     ) -> str:
         """Open a PR and return its URL. If one is already open for `head`, return that one
-        (so retrying a PR job is safe)."""
+        (so retrying a PR job is safe). `fallback_base` names another base to try when GitHub
+        says `base` is not a valid one (a tag or a commit was the job's ref): only that exact
+        refusal (422, field `base`, code `invalid`) triggers it."""
         try:
             pr = self._call(
                 "POST",
@@ -280,8 +294,27 @@ class GitHubClient:
                 existing = self.find_pull(owner, repo, head)
                 if existing:
                     return existing
+            if fallback_base is not None and e.status == 422 and ("base", "invalid") in e.fields:
+                other = fallback_base()
+                if other and other != base:
+                    return self.create_pull(
+                        owner, repo, title=title, body=body, head=head, base=other
+                    )
             raise
         return pr["html_url"]
+
+
+def _fields(resp) -> tuple[tuple[str, str], ...]:  # noqa: ANN001
+    """GitHub's validation errors as (field, code) pairs; empty if the body has none."""
+    try:
+        errors = resp.json().get("errors") or []
+    except (ValueError, AttributeError):
+        return ()
+    return tuple(
+        (str(e["field"]), str(e.get("code", "")))
+        for e in errors
+        if isinstance(e, dict) and e.get("field")
+    )
 
 
 def _explain(resp, source: str = "token") -> str:
