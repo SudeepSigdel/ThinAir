@@ -435,6 +435,12 @@ profile:
 Unknown keys are errors, so typos are reported instead of ignored. Python dependencies go into
 `/workspace/.venv` and Node dependencies into `node_modules`, both inside the job's workspace.
 
+`env:` applies to install, test and agent steps, except that agents never receive endpoint, proxy,
+certificate or credential settings from a repository (names such as `*_BASE_URL`, `*_ENDPOINT`,
+`*PROXY*`, `SSL_CERT_FILE`, `NODE_OPTIONS`, `LD_*`, or starting with `OPENAI_`, `ANTHROPIC_`,
+`GEMINI_`, `GOOGLE_`, `CODEX_`, `CLAUDE_`, `COPILOT_`, `GH_`, `GITHUB_`): a repository could
+otherwise point an agent's login or API key at its own server. The job log lists what was left out.
+
 ### How the profile works
 
 The tests run once with the most resources. If they don't pass there, Thinair stops and tells you
