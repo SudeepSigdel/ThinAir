@@ -194,6 +194,7 @@ def test_a_code_redeemed_by_two_requests_at_once_signs_in_only_one() -> None:
 
     import thinair.pairing as pairing
 
+    upgrade(get_engine())
     with session_scope() as s:
         code = create_pairing_code(s)
     real_find, barrier, tokens = pairing._find, threading.Barrier(2, timeout=5), []
