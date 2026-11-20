@@ -34,17 +34,17 @@ profiler search (97% covered).
 | A3 ✅ de61106+test fix | Medium | Security | CONFIRMED (forced interleaving) | `pairing.py:107-123` | `redeem` is read-then-write: two simultaneous requests both get a token from one one-time code | S |
 | A4 ✅ e44c8e3 | Medium | Security | PLAUSIBLE | `config.py:41`, `cli/main.py` `uvicorn_options` | Trusted proxies include all RFC1918 (the Docker bridge gateway), so a directly published port honours a forged `X-Forwarded-For` | M |
 | A5 ✅ 8ad2d1c | Medium | Security | PLAUSIBLE | `agents/cli_adapter.py:221-222`, `project/detect.py:66` | Repo-controlled `thinair.yaml env` is placed in the agent container (next to the login volume and passthrough API keys) | M |
-| A6 | Medium | Release | CONFIRMED | `release.yml`, `Dockerfile:18` | Images pushed with no CI gate; `pip install .` ignores `uv.lock`; no provenance/SBOM/signature | M |
-| A7 | Medium | Upgrade path | PLAUSIBLE | `install.sh:26,469` | Compose file is fetched from `main` but the image is the latest release: version skew | M |
+| A6 ✅ 8ad169e (partly) | Medium | Release | CONFIRMED | `release.yml`, `Dockerfile:18` | Images pushed with no CI gate; `pip install .` ignores `uv.lock`; no provenance/SBOM/signature | M |
+| A7 ⏸ deferred | Medium | Upgrade path | PLAUSIBLE | `install.sh:26,469` | Compose file is fetched from `main` but the image is the latest release: version skew | M |
 | A8 ✅ 61dc607 | Low | Correctness | CONFIRMED | `runner_client.py:178-184` | `except (RequestException, ValueError)` precedes `except RunnerSetupError` (a `ValueError`): the "runner disabled, stop" branch is dead | S |
 | A9 ✅ 1fa2dfa | Low | Correctness | CONFIRMED (by reading) | `project/prepare.py:29,54` | `Foo/Bar`, `foo/bar`, `foo/bar.git` become three `Repo` rows; owner/name `..` passes the regex | S |
 | A10 ⏸ skipped | Low | Correctness | PLAUSIBLE | `jobs/pr.py:437` | PR base = `parent.ref`; a tag/sha ref gives GitHub 422 *after* the branch was pushed | S |
 | A11 ❌ withdrawn | Low | Postgres | PLAUSIBLE | `db/session.py:31` | Naive `timestamp` columns get aware datetimes; non-UTC server timezone shifts stored values | S |
 | A12 ⏸ deferred | Low | Reliability | PLAUSIBLE | `jobs/service.py:362-368,436-447` | If the final DB write fails (disk full), the job stays RUNNING and its SSE hangs until restart | S |
-| A13 | Low | Performance | PLAUSIBLE | `jobs/events.py:41` | Log cap is 50,000 events x up to 8,192 chars (~400 MB/job) | S |
-| A14 | Low | Security | CONFIRMED (by reading) | `api/setup_api.py:144-152` | Any member can start agent-image builds (heavy on 1 GB) | S |
-| A15 | Low | Security | CONFIRMED (by reading) | `api/routes.py:425-446` | An open SSE stream keeps running after its token is revoked / user disabled | S |
-| A16 | Low | CI | CONFIRMED | `ci.yml` | No shellcheck, pip-audit, ARM, concurrency; CI runs twice on PR branches; docker-only modules have no coverage signal | S |
+| A13 ✅ 6ee3ac7 | Low | Performance | PLAUSIBLE | `jobs/events.py:41` | Log cap is 50,000 events x up to 8,192 chars (~400 MB/job) | S |
+| A14 ✅ fix(setup) commit | Low | Security | CONFIRMED (by reading) | `api/setup_api.py:144-152` | Any member can start agent-image builds (heavy on 1 GB) | S |
+| A15 ✅ b5761c3 | Low | Security | CONFIRMED (by reading) | `api/routes.py:425-446` | An open SSE stream keeps running after its token is revoked / user disabled | S |
+| A16 ✅ 8ad169e (partly) | Low | CI | CONFIRMED | `ci.yml` | No shellcheck, pip-audit, ARM, concurrency; CI runs twice on PR branches; docker-only modules have no coverage signal | S |
 
 ## Finding details
 
@@ -81,12 +81,12 @@ profiler search (97% covered).
 - **Fix.** In `CLIAdapter._env` drop repo env entirely for agent runs except keys the agent config lists (`AgentConfig.env_from_repo: [...]`, default empty). The repo env still applies to install/test steps. Keep PATH/VIRTUAL_ENV (they come from `_PY_ENV`, not the repo). Document in docs/agents.md and the `thinair.yaml` reference.
 - **Test.** `test_agents_unit.py`: a `ResolvedProject` with `env={"OPENAI_BASE_URL": "x"}` produces an agent env without it; PATH is kept.
 
-### A6 Medium: release pipeline
+### A6 Medium: release pipeline ✅ partly fixed (Batch 4)
 - **Problem.** `release.yml` runs on every push to `main` and every tag independently of `ci.yml`: a red commit still publishes `edge`, a red tag publishes `latest`. `Dockerfile` runs `pip install .` so dependency versions are whatever is newest at build time (the committed `uv.lock` is not used). Base images are tags, not digests. No SBOM/provenance attestation or signature, so users can't verify what `install.sh` pulls.
 - **Fix.** (1) Add a `test` job (ruff + `pytest -m "not docker"`) and `needs: test` to the image job (or `workflow_call` CI). (2) Export constraints in the build: `uv export --no-hashes --no-dev > constraints.txt` committed/generated in the workflow; Dockerfile `pip install -c constraints.txt ".${EXTRAS...}"`. (3) `provenance: mode=max`, `sbom: true` on build-push; keyless `cosign sign` of the digest (needs `id-token: write`). (4) Pin base image digests via Dependabot/Renovate.
 - **Test.** Workflow-level: a deliberately failing test on a throwaway branch must block the image job; `docker buildx imagetools inspect` shows attestations.
 
-### A7 Medium: installer fetches compose from `main`
+### A7 Medium: installer fetches compose from `main` ⏸ deferred
 - **Problem.** `RAW_URL=.../main` and `fetch $RAW_URL/docker-compose.yml`, while the image tag defaults to `latest` (last release). A commit on main that changes compose (e.g. the `NETWORKS: 1` the egress allowlist needs) reaches installs before an image that supports it exists.
 - **Fix.** Publish `docker-compose.yml` and `install.sh` as release assets (in `release.yml`), and have the installer fetch the compose file for the resolved version (`.../releases/download/vX.Y.Z/docker-compose.yml`; for `latest`, `.../releases/latest/download/...`; `edge` and `local` keep using main). `THINAIR_RAW_URL` stays for offline tests.
 - **Test.** The existing `docker:cli` installer test with a fake release layout; assert the fetched compose matches the tag.
@@ -109,16 +109,16 @@ Columns are naive `timestamp`; code writes aware UTC datetimes. psycopg converts
 ### A12 Low: failed final write leaves a job RUNNING ⏸ deferred: needs a larger change
 `_execute`'s `finally` and `_finish` do DB writes with no fallback; a full disk or locked DB raises inside the worker, the row stays RUNNING, the SSE never ends. **Fix:** wrap `_finish` in a retry (3 tries, 1 s) and, on final failure, log loudly and keep the job id in `self._unsettled`, retried at the next `start()` (already handled by `_recover`). **Test:** executor that returns after monkeypatching `session_scope` to raise once.
 
-### A13 Low: event cap by count
+### A13 Low: event cap by count ✅ fixed (Batch 4)
 Cap per job is 50,000 events; each line may be 8,192 chars (about 400 MB in SQLite/PG in the worst case, and a profile job runs up to 40 sandboxes). **Fix:** also count bytes in `EventStore.emit` (default 20 MB per job, `THINAIR_MAX_LOG_BYTES`). **Test:** `test_events.py`.
 
-### A14 Low: members can start image builds
+### A14 Low: members can start image builds ✅ fixed (Batch 4)
 `POST /api/setup` with `preferred_agent` calls `_start_prebuild` for any caller; on a 1 GB VM a build is heavy. **Fix:** only start the prebuild for admins (members' choice is still saved; their first job builds it, under the job limit). **Test:** `test_setup_api.py`.
 
-### A15 Low: SSE outlives revocation
+### A15 Low: SSE outlives revocation ✅ fixed (Batch 4)
 Auth is checked at connect only. **Fix:** in `EventStore.stream` callers, re-verify the token on each keep-alive (every 15 s: one indexed lookup); end the stream if revoked. **Test:** revoke during an open stream; stream ends within one heartbeat (use a short heartbeat).
 
-### A16 Low: CI gaps
+### A16 Low: CI gaps ✅ partly fixed (Batch 4)
 `ci.yml` runs on `push` and `pull_request` (double runs), has no shellcheck (the project conventions require install.sh to stay shellcheck-clean), no `pip-audit`, no ARM job (the product targets ARM VMs; release builds arm64 only under QEMU and never tests it), and no coverage signal for modules only the Docker job touches. **Fix:** `concurrency` group; `shellcheck install.sh` step; `uvx pip-audit`; a `ubuntu-24.04-arm` docker-tests job; `--cov` in the docker job with a floor on `sandbox/` and `agents/cli_adapter.py`. Align `checkout`/`setup-uv` versions with release.yml.
 
 ## Proposals (not for now)
@@ -174,3 +174,17 @@ Verify manually: restart the server mid-job and open the job on a phone (no reco
 1. With the installer's default Caddy setup, run `thinair doctor`: "Proxy trust: ok". Set `THINAIR_BIND=0.0.0.0` in `.env`, restart: the check warns.
 2. Behind Caddy, send wrong tokens from two phones: each is throttled separately (real addresses still counted).
 3. Put `env: {OPENAI_BASE_URL: https://example.invalid}` in a test repo's `thinair.yaml`, run an agent job: the log shows the "not passing these thinair.yaml settings" line, and the agent's environment lacks it.
+
+## Status of fixes (Batch 4, branch `fix/audit-batch-4`, stacked on batch 3)
+- ✅ A13 (6ee3ac7): `EventStore` also caps stored log text per job in bytes (`THINAIR_MAX_LOG_BYTES`, default 20 MiB), with the same one-time notice; status and results are never dropped. The notice is now written exactly once per job (a `_capped` set replaces the old `seq == max + 1` test, which could miss it when a status event had taken that sequence number).
+- ✅ A14: only admins start an agent-image build from the setup screen; a member's choice is still saved and their first job builds the image.
+- ✅ A15 (b5761c3): an open job stream re-checks its token every 15 s (`STREAM_RECHECK_S`) and ends when it is revoked or the user disabled. The test failed before the change (stream still open after revocation).
+- ✅ A6, partly (8ad169e): the release workflow now runs lint and the fast tests first (`needs: test`), builds against `uv export` constraints of `uv.lock` (the Dockerfile uses `constraints.txt` only when present, so local `--build` is unchanged), and attaches provenance (`mode=max`) and an SBOM. **Verified here:** the export command, and real Docker builds both without and with `constraints.txt` (the release-style image contains exactly the pinned versions). **Not done:** keyless cosign signing (needs an action version I could not verify) and base-image digest pinning (needs real digests and a bot to keep them fresh). **Not verified:** the workflows themselves have never run (they are syntax-checked as YAML only); the first push to `main` after merging is the real test.
+- ✅ A16, partly (8ad169e): CI no longer runs twice on PR branches (push is limited to `main`), runs `shellcheck install.sh` (checked here with the official image: clean), has an informational `pip-audit` job, and an informational ARM leg for the Docker tests (it has never run on ARM; expect to fix things). **Not done:** a coverage floor for the Docker-only modules (there is no measured baseline to set it against) and aligning `checkout` and `setup-uv` versions between the two workflows (not verified as safe).
+- ⏸ A7 deferred: the installer fetching a release-matched compose file is a change to the script users pipe into `sh`, and it can't be tested here beyond shellcheck (no release tag, no clean VM). Do it together with the first real release, with the installer's `docker:cli` test run against a fork's release assets.
+
+### Verify manually (Batch 4)
+1. Merge, then watch the first `main` run: `test` must gate `image`, and `docker buildx imagetools inspect ghcr.io/<owner>/thinair:edge` should show provenance and SBOM attestations.
+2. Open a PR from a branch: CI runs once, not twice. Check the ARM leg's first result; fix or keep it informational.
+3. Sign a phone out (Devices) while it watches a running job: its stream ends within about 15 seconds.
+4. Run a job that prints more than 20 MiB: the log ends with the "log limit reached" notice and the job still finishes with its result.
