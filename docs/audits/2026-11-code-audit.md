@@ -42,7 +42,7 @@ profiler search (97% covered).
 | A11 ❌ withdrawn | Low | Postgres | PLAUSIBLE | `db/session.py:31` | Naive `timestamp` columns get aware datetimes; non-UTC server timezone shifts stored values | S |
 | A12 ⏸ deferred | Low | Reliability | PLAUSIBLE | `jobs/service.py:362-368,436-447` | If the final DB write fails (disk full), the job stays RUNNING and its SSE hangs until restart | S |
 | A13 ✅ 6ee3ac7 | Low | Performance | PLAUSIBLE | `jobs/events.py:41` | Log cap is 50,000 events x up to 8,192 chars (~400 MB/job) | S |
-| A14 ✅ fix(setup) commit | Low | Security | CONFIRMED (by reading) | `api/setup_api.py:144-152` | Any member can start agent-image builds (heavy on 1 GB) | S |
+| A14 ✅ 31b3620 | Low | Security | CONFIRMED (by reading) | `api/setup_api.py:144-152` | Any member can start agent-image builds (heavy on 1 GB) | S |
 | A15 ✅ b5761c3 | Low | Security | CONFIRMED (by reading) | `api/routes.py:425-446` | An open SSE stream keeps running after its token is revoked / user disabled | S |
 | A16 ✅ 8ad169e (partly) | Low | CI | CONFIRMED | `ci.yml` | No shellcheck, pip-audit, ARM, concurrency; CI runs twice on PR branches; docker-only modules have no coverage signal | S |
 
