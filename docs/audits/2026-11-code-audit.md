@@ -29,8 +29,8 @@ profiler search (97% covered).
 ## Findings table
 | ID | Sev | Category | Status | Where | Problem | Effort |
 |----|-----|----------|--------|-------|---------|--------|
-| A1 | High | Reliability/Security | CONFIRMED | `sandbox/manager.py:578-615` | `_stream_logs` buffers a line without limit: output with no `\n` grows memory and CPU quadratically | S |
-| A2 | High | Correctness | CONFIRMED | `jobs/service.py:127-142` | Crash recovery writes the `interrupted` status but emits no final STATUS event; SSE ends without one | S |
+| A1 ✅ 225b1f2 | High | Reliability/Security | CONFIRMED | `sandbox/manager.py:578-615` | `_stream_logs` buffers a line without limit: output with no `\n` grows memory and CPU quadratically | S |
+| A2 ✅ cea2e7a | High | Correctness | CONFIRMED | `jobs/service.py:127-142` | Crash recovery writes the `interrupted` status but emits no final STATUS event; SSE ends without one | S |
 | A3 | Medium | Security | CONFIRMED (forced interleaving) | `pairing.py:107-123` | `redeem` is read-then-write: two simultaneous requests both get a token from one one-time code | S |
 | A4 | Medium | Security | PLAUSIBLE | `config.py:41`, `cli/main.py` `uvicorn_options` | Trusted proxies include all RFC1918 (the Docker bridge gateway), so a directly published port honours a forged `X-Forwarded-For` | M |
 | A5 | Medium | Security | PLAUSIBLE | `agents/cli_adapter.py:221-222`, `project/detect.py:66` | Repo-controlled `thinair.yaml env` is placed in the agent container (next to the login volume and passthrough API keys) | M |
@@ -48,14 +48,14 @@ profiler search (97% covered).
 
 ## Finding details
 
-### A1 High: unbounded line buffer (`_stream_logs`)
+### A1 High: unbounded line buffer (`_stream_logs`) ✅ fixed in 225b1f2
 - **Problem.** `buf += chunk; *lines, buf = buf.split(b"\n")`. With no newline the whole stream stays in `buf`; the 5 MiB `max_output_bytes` is checked only in `emit`, i.e. after a line completes. `bytes +=` also copies every time (quadratic). A progress bar using only `\r`, or `yes | tr -d '\n'`, triggers it.
 - **Evidence (throwaway script, 64 KiB chunks, no newline):** 8 MB: 0.3 s, peak 17 MB. 32 MB: 5.3 s, peak 67 MB. 64 MB: **21 s, peak 134 MB**, one line emitted (cap is 5 MiB). Time x4 per size x2. A container can emit GB/s; the server container is `mem_limit: 256m`, and the copying runs on a thread holding the GIL, stalling the event loop.
 - **Failure scenario.** Profile or agent job on a repo whose test prints without newlines (hostile or just a buggy progress bar): the server is OOM-killed, every running job becomes `interrupted` (and see A2).
 - **Fix.** In `_stream_logs` (`manager.py`): keep `buf` a `bytearray`; add `MAX_LINE_BYTES = 64 KiB`; after each chunk, while `len(buf) > MAX_LINE_BYTES` emit the first `MAX_LINE_BYTES` as one line (mark truncated) and drop the rest up to the next newline (`discarding` flag). Count `total` in raw bytes as they arrive, before splitting, so the global cap holds. Keep masking BEFORE the cut (existing gotcha): mask on the 64 KiB window plus a `max(len(secret))` carry-over so a secret across the cut is still masked. Keep draining the stream after the cap so the container never blocks on a full pipe.
 - **Test.** `tests/test_sandbox_unit.py` (no Docker): fake container whose `logs()` yields 64 MiB of `b"A"*65536`; assert wall time < 2 s, `tracemalloc` peak < 8 MB, emitted lines <= cap/64 KiB + 1, truncated flag set. Second test: a secret straddling the 64 KiB cut is fully masked.
 
-### A2 High: recovered jobs never emit a terminal STATUS event
+### A2 High: recovered jobs never emit a terminal STATUS event ✅ fixed in cea2e7a
 - **Problem.** `_recover` (service.py:135) calls `_finish_row` directly. Every other path uses `_finish`, which emits the STATUS event first. The notes state the UI relies on that event (`views-jobs.js:285-306`: it closes the `EventSource` and loads the report/result only on a terminal status).
 - **Evidence (throwaway script):** RUNNING job recovered at start -> `events: []`; `stream()` yields 0 frames and returns. `test_restart_recovery` only asserts the DB row.
 - **Failure scenario.** Server restarts (A1's OOM, a deploy, a reboot) while a job runs. The phone opens that job: stream ends at once with no terminal event, the browser's `EventSource` auto-reconnects every ~3 s forever, "Reconnecting..." shows, and the partial result is never loaded.
@@ -142,3 +142,13 @@ Verify manually: restart the server mid-job and open the job on a phone (no reco
 **Batch 2: `fix/audit-batch-2` (A3, A8, A9, A10, A11, A12)** all S; the tests are listed in each finding.
 **Batch 3: `fix/audit-batch-3` (A4, A5)** security hardening, M. A4 changes defaults: needs a CHANGELOG note and a doctor check.
 **Batch 4: `fix/audit-batch-4` (A6, A7, A16, A13, A14, A15)** pipeline and installer; A6/A7 can't be fully tested without a real release tag, so they need a dry-run on a fork.
+
+## Status of fixes (Batch 1, branch `fix/audit-batch-1`)
+- ✅ A1 (225b1f2): `_stream_logs` keeps at most 64 KiB of an unfinished line (`MAX_LINE_BYTES`), shows its start masked as before and drops the rest up to the next newline. Tests: `test_output_without_newlines_uses_bounded_memory` (failed before: 67 MB peak; now < 8 MB), masking inside an overlong line, and unchanged behaviour for normal/CRLF/split lines.
+- ✅ A2 (cea2e7a): `_recover` uses `_finish` (event first, then the row); `follow()` in `views-jobs.js` stops reconnecting when the job is already finished (covers jobs interrupted before the fix, which have no final event stored; their partial result is still not auto-loaded). Test: `test_restart_recovery` now asserts the stored final STATUS event and that the stream delivers it (failed before with an empty event list).
+- Not in Batch 1: A3 to A16 (Batches 2 to 4 above).
+
+### Verify manually (tests can't cover these)
+1. Restart the server while a job is running, then open that job on a phone: it must show *failed (interrupted)* and no "Reconnecting..." that never goes away. Open a job that was interrupted *before* this fix: the page must stop reconnecting.
+2. Profile a repo whose test prints 100 MB without a newline (for example `python -c "import sys; sys.stdout.write('A'*10**8)"`) and watch `docker stats`: the server container must stay far below its 256 MiB limit, and the log must show the start of the line followed by later output.
+3. Real-device check of the job page is unchanged otherwise (only an extra early return in the stream's error handler).
