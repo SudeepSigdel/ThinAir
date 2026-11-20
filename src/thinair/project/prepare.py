@@ -20,7 +20,15 @@ from pathlib import Path
 from thinair.config import get_settings
 from thinair.github import GitHubAccess, GitHubTokenError, git_auth_env
 from thinair.project.config import ProjectConfig, ProjectConfigError, parse_project_config
-from thinair.project.detect import IMAGES, PYTHON_IMAGE, ResolvedProject, resolve_project
+from thinair.project.detect import (
+    IMAGES,
+    MANIFESTS,
+    PYTHON_IMAGE,
+    ResolvedProject,
+    choose_workdir,
+    detect_stack,
+    resolve_project,
+)
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError, SandboxSpec, VolumeMount
 
@@ -182,6 +190,21 @@ async def _list_names(mgr, job_id, volume, subdir: str = ".") -> set[str]:
     return set(lines) if code == 0 else set()
 
 
+async def _find_manifests(mgr, job_id, volume) -> list[str]:
+    """Project files up to three levels down (paths relative to the repo root), in one run."""
+    names: list[str] = []
+    for i, name in enumerate(MANIFESTS):
+        names += (["-o"] if i else []) + ["-name", name]
+    code, lines = await _read_only(
+        mgr,
+        job_id,
+        volume,
+        ["find", "/workspace", "-maxdepth", "3", "-type", "f", "(", *names, ")"],
+    )
+    prefix = "/workspace/"
+    return [ln[len(prefix) :] for ln in lines if code == 0 and ln.startswith(prefix)]
+
+
 async def _read_text(mgr, job_id, volume, rel: str) -> str | None:
     code, lines = await _read_only(mgr, job_id, volume, ["cat", "--", f"/workspace/{rel}"])
     return "\n".join(lines) if code == 0 else None
@@ -219,6 +242,13 @@ async def prepare_workspace(
             else None
         )
         config = parse_project_config(cfg_text)
+        if config.workdir == "." and config.stack == "auto" and detect_stack(names) is None:
+            # Nothing in the top folder: the project may live in a subfolder (a monorepo).
+            sub, note = choose_workdir(await _find_manifests(mgr, job_id, volume))
+            if sub:
+                said = f" ({note})" if note else ""
+                log(f"[thinair] no project in the top folder; using {sub}/{said}")
+                config = config.model_copy(update={"workdir": sub})
         if config.workdir != ".":
             names = await _list_names(mgr, job_id, volume, config.workdir)
         resolved = resolve_project(names, config)

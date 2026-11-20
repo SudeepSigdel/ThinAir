@@ -190,3 +190,53 @@ def test_every_sandbox_image_owns_workspace_as_the_sandbox_user() -> None:
     for f in files:
         text = f.read_text(encoding="utf-8")
         assert "chown 10001:10001 /workspace" in text and "USER 10001:10001" in text, f.name
+
+
+# ---- finding a project below the top folder ------------------------------------------------------
+def test_a_project_in_a_subfolder_is_found() -> None:
+    from thinair.project.detect import choose_workdir
+
+    # One project, in a subfolder: use it, with no warning.
+    assert choose_workdir(["backend/requirements.txt", "backend/app/x.txt"]) == ("backend", None)
+    assert choose_workdir(["web/package.json"]) == ("web", None)
+    assert choose_workdir(["services/api/pyproject.toml"]) == ("services/api", None)
+    assert choose_workdir([]) == (None, None)
+    assert choose_workdir(["notes/README.md", "x/y/z/package.json"]) == (None, None)  # too deep
+
+
+def test_several_projects_pick_one_and_say_so() -> None:
+    from thinair.project.detect import choose_workdir
+
+    paths = ["frontend/package.json", "backend/requirements.txt", "docs/package.json"]
+    chosen, note = choose_workdir(paths)
+    # Deterministic: python before node (a profile needs tests; Python projects ship them more
+    # often), then the shallowest, then by name.
+    assert chosen == "backend"
+    assert note and "backend" in note and "frontend" in note and "workdir" in note
+    # Same stack: shallowest first, then alphabetical.
+    chosen, _ = choose_workdir(["b/package.json", "a/c/package.json", "a/package.json"])
+    assert chosen == "a"
+
+
+def test_dependency_and_hidden_folders_never_count() -> None:
+    from thinair.project.detect import choose_workdir
+
+    junk = [
+        "node_modules/left-pad/package.json",
+        "web/node_modules/x/package.json",
+        ".venv/lib/pyproject.toml",
+        ".github/package.json",
+        "vendor/pkg/setup.py",
+        "site-packages/x/setup.py",
+    ]
+    assert choose_workdir(junk) == (None, None)
+    assert choose_workdir([*junk, "app/setup.py"]) == ("app", None)
+
+
+def test_the_error_says_what_was_looked_at() -> None:
+    from thinair.project.config import ProjectConfig, ProjectConfigError
+
+    with pytest.raises(ProjectConfigError) as e:
+        resolve_project({"README.md", "pom.xml", "src"}, ProjectConfig())
+    text = str(e.value)
+    assert "pom.xml" in text and "Python and Node.js" in text and "workdir" in text

@@ -583,7 +583,12 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
   installer again and scan the new QR code.
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set
   `THINAIR_PIP_INDEX_URL` / `THINAIR_NPM_REGISTRY` in `.env` to a mirror you can reach.
-- **"Could not detect the project type"**: add a `thinair.yaml` with `stack`, `install` and `test`.
+- **"Could not detect the project type"**: Thinair runs Python and Node.js projects and looks for
+  `package.json`, `requirements.txt`, `pyproject.toml`, `setup.py` or `setup.cfg` in the top folder and,
+  if there is none, up to two levels of subfolders (it picks one and says which; Python before Node).
+  If your project is elsewhere or needs other commands, add a `thinair.yaml` to the repository with
+  `workdir`, `stack`, `install` and `test`. Other languages (Java, Go, ...) are not supported yet: the
+  sandbox images only contain Python and Node.js.
 - **"Claude Code is not signed in"**: tap **Sign in to the agent** on the failed job (or
   Agents > Sign in), then **Run again**. From a terminal: `thinair auth claude` (see above).
 - **Codex sign-in fails right away**: turn on device code login in your ChatGPT security
