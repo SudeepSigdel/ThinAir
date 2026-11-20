@@ -35,6 +35,8 @@ from thinair.sandbox.spec import (
 
 LineCallback = Callable[[str], None]
 MAX_LINE_CHARS = 8192
+# Most of one unfinished line kept in memory (4 bytes per shown character, plus room for a secret).
+MAX_LINE_BYTES = 64 * 1024
 
 
 def build_container_args(spec: SandboxSpec) -> dict[str, Any]:
@@ -584,7 +586,8 @@ def _stream_logs(
     """Split the merged stdout/stderr stream into lines, redact secrets, cap total size."""
     # Longest first, so a secret that contains another one is masked whole.
     secrets_ = sorted({s for s in spec.redact if s}, key=len, reverse=True)
-    buf = b""
+    buf = bytearray()
+    discarding = False
     total = 0
 
     def emit(raw: bytes) -> None:
@@ -604,14 +607,30 @@ def _stream_logs(
             line = line.replace(s, "***")
         on_line(line[:MAX_LINE_CHARS])
 
+    # A process can print forever without a newline (a progress bar, `yes | tr -d '\n'`). Keep at
+    # most MAX_LINE_BYTES of such a line: show its start, drop the rest up to the next newline.
+    # The window is far larger than what is shown (MAX_LINE_CHARS), so a secret that starts in the
+    # visible part is inside it and is masked whole.
     with contextlib.suppress(DockerException, requests.exceptions.RequestException):
         for chunk in container.logs(stream=True, follow=True, stdout=True, stderr=True):
-            buf += chunk
-            *lines, buf = buf.split(b"\n")
-            for ln in lines:
-                emit(ln.rstrip(b"\r"))
-    if buf:
-        emit(buf)
+            pos, end = 0, len(chunk)
+            while pos < end:
+                nl = chunk.find(b"\n", pos)
+                stop = end if nl < 0 else nl
+                if not discarding:
+                    buf += chunk[pos:stop]
+                    if len(buf) > MAX_LINE_BYTES:
+                        emit(bytes(buf[:MAX_LINE_BYTES]))
+                        buf.clear()
+                        discarding = True
+                pos = end if nl < 0 else nl + 1
+                if nl >= 0:  # a newline ends the line
+                    if not discarding:
+                        emit(bytes(buf).rstrip(b"\r"))
+                        buf.clear()
+                    discarding = False
+    if buf and not discarding:
+        emit(bytes(buf))
 
 
 def _sample_stats(container: Container, out: dict[str, float]) -> None:
