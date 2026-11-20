@@ -445,6 +445,44 @@ def test_runner_program_stops_a_cancelled_job(live) -> None:
     assert api.get(f"{base}/api/jobs/{job['id']}").json()["status"] == "cancelled"
 
 
+def test_runner_program_stops_when_the_server_disables_it_mid_job(live) -> None:
+    """Regression (audit A8): RunnerSetupError is a ValueError, and an earlier `except
+    (RequestException, ValueError)` swallowed it, so a runner disabled while working kept
+    profiling (and posting 401s) to the end."""
+    base, api = live
+    token = api.post(f"{base}/api/runners", json={"name": "box"}).json()["token"]
+    state = {"started": threading.Event(), "cancelled": False}
+
+    async def slow_profile(source, job_id, log_fn, on_run, github_auth) -> Profiled:
+        state["started"].set()
+        try:
+            while True:
+                log_fn("working")  # something to post, so the client talks to the server
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    api.post(f"{base}/api/jobs", json={"repo_url": URL})
+    client = RunnerClient(base, token, profile=slow_profile, wait_s=5)
+    got = client.claim()
+    outcome: dict = {}
+
+    def work() -> None:
+        try:
+            asyncio.run(client.run_job(got))
+        except BaseException as e:  # noqa: BLE001 - the test inspects it
+            outcome["error"] = e
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    assert state["started"].wait(10)
+    api.post(f"{base}/api/runners/box/disable")
+    worker.join(30)
+    assert not worker.is_alive() and state["cancelled"]
+    assert isinstance(outcome.get("error"), RunnerSetupError)
+
+
 def test_runner_program_refuses_bad_payloads_and_wrong_secrets(live) -> None:
     base, api = live
     with pytest.raises(RunnerSetupError):
