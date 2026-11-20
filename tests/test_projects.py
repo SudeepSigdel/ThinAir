@@ -152,3 +152,43 @@ def test_dot_segments_are_not_repository_names(client) -> None:
     for bad in ("https://github.com/../x", "https://github.com/x/..", "https://github.com/./x"):
         r = client.post("/api/repos", json={"url": bad})
         assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_repo_url", bad
+
+
+def test_an_open_event_stream_ends_when_its_token_is_revoked(client, monkeypatch) -> None:
+    """Audit A15: the token was checked only when the stream opened, so a revoked phone (or a
+    disabled user) kept receiving a running job's output until the job ended."""
+    import threading
+
+    from sqlmodel import select
+
+    from thinair.api import routes
+    from thinair.auth import create_token, revoke_token
+    from thinair.db.models import ApiToken
+    from thinair.db.session import session_scope
+
+    monkeypatch.setattr(routes, "STREAM_RECHECK_S", 0.1, raising=False)
+    client.app.state.jobs.events.heartbeat_s = 0.1
+    with session_scope() as s:
+        phone = create_token(s, "phone")
+    job = client.post(
+        "/api/jobs", json={"repo_url": A, "kind": "agent", "agent_id": "claude", "task": "x"}
+    ).json()  # runs forever
+    opened, ended = threading.Event(), threading.Event()
+
+    def read() -> None:
+        with client.stream(
+            "GET", f"/api/jobs/{job['id']}/events", headers=h(phone), timeout=10
+        ) as r:
+            assert r.status_code == 200
+            for _ in r.iter_lines():
+                opened.set()
+        ended.set()
+
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    assert opened.wait(10)
+    assert not ended.wait(0.5)  # the job is still running: the stream stays open
+    with session_scope() as s:
+        row = s.exec(select(ApiToken).where(ApiToken.name == "phone")).one()
+        revoke_token(s, row.id)
+    assert ended.wait(10), "the stream kept running after the token was revoked"

@@ -1,5 +1,14 @@
 name: CI
-on: [push, pull_request]
+# Pull requests and main only: a branch with an open PR used to run everything twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,8 +19,31 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -m "not docker"
-  docker-tests:
+      # The installer is piped into sh on other people's machines: keep it shellcheck-clean.
+      - run: shellcheck install.sh
+
+  # Known vulnerabilities in the locked dependencies. Informational (does not block a merge): a new
+  # advisory should not turn every unrelated pull request red.
+  audit:
     runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv export --frozen --no-hashes --all-extras --no-emit-project > requirements.audit.txt
+      - run: uvx pip-audit -r requirements.audit.txt --no-deps --disable-pip
+
+  docker-tests:
+    # ARM matters: the product targets small ARM VMs. That leg is informational until it has
+    # run green a few times (it was never run before).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-latest, experimental: false}
+          - {runner: ubuntu-24.04-arm, experimental: true}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

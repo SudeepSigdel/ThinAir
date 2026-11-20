@@ -8,6 +8,9 @@ Errors use one shape: `{"detail": {"code": "...", "message": "..."}}`, where `me
 and readable to show on a phone.
 """
 
+import asyncio
+import time
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any, Literal
 
@@ -18,7 +21,7 @@ from sqlmodel import Session, case, func, select
 
 from thinair import setup_state
 from thinair.agents.config import load_agents
-from thinair.api.auth import require_admin, require_auth
+from thinair.api.auth import require_admin, require_auth, still_signed_in
 from thinair.auth import create_token
 from thinair.db.models import Job, JobKind, JobResult, JobStatus, ProfileReport, Repo, User
 from thinair.db.session import session_scope
@@ -422,6 +425,21 @@ async def job_input(
     return {"delivered": True}
 
 
+STREAM_RECHECK_S = 15.0  # how often an open stream re-checks that its token is still valid
+
+
+async def _while_signed_in(frames: AsyncIterator[str], who: Principal) -> AsyncIterator[str]:
+    """Pass SSE frames on, but end the stream once the caller's token is revoked or their user
+    disabled (otherwise a signed-out phone keeps receiving a running job's output)."""
+    checked = time.monotonic()
+    async for frame in frames:
+        yield frame
+        if time.monotonic() - checked >= STREAM_RECHECK_S:
+            checked = time.monotonic()
+            if not await asyncio.to_thread(still_signed_in, who):
+                return
+
+
 @router.get("/jobs/{job_id}/events", tags=["jobs"], response_class=StreamingResponse)
 async def job_events(
     job_id: str,
@@ -440,7 +458,7 @@ async def job_events(
     if start is None:
         start = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     return StreamingResponse(
-        jobs_service(request).events.stream(job_id, start),
+        _while_signed_in(jobs_service(request).events.stream(job_id, start), who),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

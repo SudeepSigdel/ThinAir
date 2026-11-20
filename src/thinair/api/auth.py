@@ -146,6 +146,18 @@ def _check(request: Request, token: str) -> Principal:
     raise _unauthorized()
 
 
+def still_signed_in(who: Principal) -> bool:
+    """Is this caller's token still valid (not revoked, user not disabled)? For long-lived
+    streams, which check the token only when they open."""
+    from thinair.db.models import ApiToken
+
+    with session_scope() as session:
+        row = session.get(ApiToken, who.token_id)
+        return (
+            row is not None and row.revoked_at is None and principal_for(session, row) is not None
+        )
+
+
 def require_admin(who: Principal = Depends(require_auth)) -> Principal:
     if not who.is_admin:
         raise HTTPException(

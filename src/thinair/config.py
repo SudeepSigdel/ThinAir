@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # profile reports, status history and agent messages are kept.
     log_retention_days: int = Field(default=30, ge=0)
 
+    # Most log text stored per job; past it output is dropped (the result and status are kept).
+    max_log_bytes: int = Field(default=20 * 1024**2, ge=1024)
+
     # Agent conversations (jobs started with "keep the conversation open"): how long the agent
     # waits for your next message or an approval before it finishes the job. The sandbox (and a
     # job slot) stays in use while it waits.

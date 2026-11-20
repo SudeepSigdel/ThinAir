@@ -20,6 +20,7 @@ from typing import Any
 
 from sqlmodel import select
 
+from thinair.config import get_settings
 from thinair.db.models import EventType, Job, JobEvent, JobStatus
 from thinair.db.session import session_scope
 
@@ -42,8 +43,16 @@ class EventStore:
         heartbeat_s: float = 15.0,
         flush_s: float = 0.2,
         flush_lines: int = 200,
+        max_log_bytes: int | None = None,
     ) -> None:
         self.max_events = max_events_per_job
+        # Stored log text per job: lines can be 8192 characters, so a line count alone allowed
+        # about 400 MB.
+        self.max_log_bytes = (
+            max_log_bytes if max_log_bytes is not None else get_settings().max_log_bytes
+        )
+        self._log_bytes: dict[str, int] = {}
+        self._capped: set[str] = set()  # jobs that already got the "log limit reached" notice
         self.heartbeat_s = heartbeat_s
         self.flush_s = flush_s
         self.flush_lines = flush_lines
@@ -71,21 +80,25 @@ class EventStore:
                 ).first()
             self._seq[job_id] = last or 0
         seq = self._seq[job_id] + 1
-        if seq > self.max_events and type_ == EventType.LOG:
-            if seq != self.max_events + 1:
+        if type_ == EventType.LOG:
+            if job_id in self._capped:
                 return None
-            # Say so once, then drop further log lines.
-            type_, stream = EventType.LOG, "system"
-            data = {
-                "line": f"[thinair] log limit reached ({self.max_events} events); "
-                "further output is not stored"
-            }
-            self._seq[job_id] = seq
-            self._pending.append(
-                JobEvent(job_id=job_id, seq=seq, type=type_, stream=stream, data=data)
-            )
-            self.flush()
-            return None
+            size = len(str((data or {}).get("line", "")))
+            used = self._log_bytes.get(job_id, 0)
+            if seq > self.max_events or used + size > self.max_log_bytes:
+                # Say so once, then drop further log lines.
+                self._capped.add(job_id)
+                self._seq[job_id] = seq
+                notice = {
+                    "line": f"[thinair] log limit reached ({self.max_events} lines or "
+                    f"{self.max_log_bytes // 1024} KiB); further output is not stored"
+                }
+                self._pending.append(
+                    JobEvent(job_id=job_id, seq=seq, type=type_, stream="system", data=notice)
+                )
+                self.flush()
+                return None
+            self._log_bytes[job_id] = used + size
         self._seq[job_id] = seq
         self._pending.append(
             JobEvent(job_id=job_id, seq=seq, type=type_, stream=stream, data=data or {})
@@ -124,6 +137,8 @@ class EventStore:
     def forget(self, job_id: str) -> None:
         self.flush()
         self._seq.pop(job_id, None)
+        self._log_bytes.pop(job_id, None)
+        self._capped.discard(job_id)
 
     def _wake(self, job_ids: set[str]) -> None:
         for job_id in job_ids:

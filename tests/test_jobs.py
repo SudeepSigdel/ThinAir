@@ -386,6 +386,30 @@ async def test_event_cap_drops_logs_but_keeps_status() -> None:
         await svc.stop()
 
 
+async def test_log_cap_counts_bytes_not_only_lines() -> None:
+    """Audit A13: the cap was 50,000 lines of up to 8,192 characters each (about 400 MB in the
+    database for one job). It now also stops at a number of bytes."""
+    store = EventStore(max_log_bytes=1000)
+
+    async def wordy(ctx, _mgr):
+        for _ in range(100):
+            ctx.log("x" * 100)  # 10,000 bytes in all
+        return ExecResult()
+
+    svc = JobService({JobKind.PROFILE: wordy}, events=store, sweep_on_start=False)
+    await svc.start()
+    try:
+        job = await until_finished(svc.submit(URL).id)
+        evs = store.fetch(job.id, limit=1000)
+        logs = [e.data["line"] for e in evs if e.type == EventType.LOG]
+        stored = sum(len(x) for x in logs if x.startswith("x"))
+        assert stored <= 1000 and len(logs) <= 11, (stored, len(logs))
+        assert logs[-1].startswith("[thinair] log limit reached")
+        assert evs[-1].data["status"] == "succeeded"  # lifecycle events are never dropped
+    finally:
+        await svc.stop()
+
+
 async def test_concurrent_jobs_have_independent_sequences() -> None:
     svc = await make_service(ok_executor, workers=3)
     try:

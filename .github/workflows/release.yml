@@ -19,10 +19,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  image:
+  # A red commit or tag must not publish an image: `edge` and `latest` are what installs pull.
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run pytest -m "not docker"
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      # The exact dependency versions CI tested (uv.lock), so the image is not whatever pip finds
+      # newest on the day of the build. The Dockerfile uses this file when it is there.
+      - run: uv export --frozen --no-hashes --no-dev --extra postgres --no-emit-project > constraints.txt
       - uses: docker/setup-qemu-action@v4    # emulates arm64 on the amd64 runner
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -44,6 +59,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           build-args: EXTRAS=postgres
+          # Build attestations: what went into the image, and where it was built.
+          provenance: mode=max
+          sbom: true
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

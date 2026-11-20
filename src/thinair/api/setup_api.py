@@ -148,7 +148,7 @@ async def post_setup(
             raise _err(422, "unknown_agent", "Pick one of the configured agents.")
         with session_scope() as s:
             setup_state.set_choice(s, who.user_id, "preferred_agent", choice)
-        if choice != "other":
+        if choice != "other" and who.is_admin:  # builds are heavy; a member's first job builds it
             _start_prebuild(request, agents[choice])
     return get_setup(request, who)
 

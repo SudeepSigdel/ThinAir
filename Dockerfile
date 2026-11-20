@@ -12,10 +12,13 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin thinair \
     # ownership of the directory it is mounted on, so without this SQLite could not write.
     && mkdir /data && chown 10001:10001 /data
 WORKDIR /app
-COPY pyproject.toml README.md ./
+# constraints.txt exists only in release builds (release.yml pins the versions CI tested); the
+# glob lets a local build (`docker compose up --build`) go without it.
+COPY pyproject.toml README.md constraints.tx[t] ./
 COPY src ./src
 RUN if [ -z "$PIP_INDEX_URL" ]; then unset PIP_INDEX_URL; fi \
-    && pip install --no-cache-dir ".${EXTRAS:+[$EXTRAS]}" \
+    && if [ -f constraints.txt ]; then set -- -c constraints.txt; else set --; fi \
+    && pip install --no-cache-dir "$@" ".${EXTRAS:+[$EXTRAS]}" \
     && rm -rf /app
 WORKDIR /data
 USER 10001:10001
