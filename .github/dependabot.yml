@@ -1,0 +1,9 @@
+# Keeps what the release image is built from fresh: the pinned base image and the workflow actions.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}

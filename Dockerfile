@@ -1,7 +1,8 @@
 # Thinair server image. No apt: nothing here needs system packages (cloning, builds and tests all
 # happen in separate sandbox containers), which also keeps the build working on networks where
 # Debian mirrors are slow or blocked.
-FROM python:3.12-slim
+# Pinned by digest (the multi-arch index, so x86 and ARM both resolve); Dependabot proposes updates.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 # Optional package mirror for restricted networks: `THINAIR_PIP_INDEX_URL` in .env (see compose).
 ARG PIP_INDEX_URL=""
