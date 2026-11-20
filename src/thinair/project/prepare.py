@@ -51,8 +51,13 @@ class GitSource:
     url: str
     ref: str | None = None
 
+    def __post_init__(self) -> None:
+        # One spelling for storing and cloning: no trailing slash or `.git`. (Case is kept for
+        # display; GitHub ignores it, and `find_repo` matches without it.)
+        object.__setattr__(self, "url", self.url.strip().rstrip("/").removesuffix(".git"))
+
     def validate(self) -> None:
-        if not GITHUB_URL.match(self.url):
+        if not GITHUB_URL.match(self.url) or {".", ".."} & set(self.url.split("/")[3:]):
             raise PrepareError(
                 "bad_repo_url",
                 "Only GitHub repositories are supported for now, "
@@ -72,6 +77,19 @@ class PreparedProject:
     volume: str
     resolved: ResolvedProject
     commit_sha: str | None
+
+
+def find_repo(session, url: str):  # noqa: ANN001, ANN201
+    """The stored `Repo` for this URL, whatever its spelling (case, `.git`, trailing slash), or
+    None. Rows saved before URLs were normalised may still carry `.git` or capitals."""
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    from thinair.db.models import Repo
+
+    canon = url.strip().rstrip("/").removesuffix(".git").lower()
+    q = select(Repo).where(func.lower(Repo.url).in_([canon, canon + ".git"]))
+    return session.exec(q.order_by(Repo.created_at)).first()
 
 
 def workspace_volume(job_id: str) -> str:
@@ -95,7 +113,7 @@ CACHE_ENV = {
 
 def cache_volume(repo_url: str, scope: str) -> str:
     """Name of the dependency cache for `repo_url` as used by `scope` (a user name)."""
-    digest = hashlib.sha256(f"{scope} {repo_url}".encode()).hexdigest()[:20]
+    digest = hashlib.sha256(f"{scope} {repo_url.lower()}".encode()).hexdigest()[:20]
     return f"thinair-cache-{digest}"
 
 

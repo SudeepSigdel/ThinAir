@@ -18,7 +18,7 @@ from thinair import setup_state
 from thinair.db.models import EventType, Job, JobKind, JobStatus, Repo, utcnow
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES, EventStore
-from thinair.project.prepare import GitSource, PrepareError
+from thinair.project.prepare import GitSource, PrepareError, find_repo
 from thinair.sandbox import janitor
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError
@@ -171,7 +171,7 @@ class JobService:
             refusal = too_many_jobs(s, user_id)
             if refusal:
                 raise PrepareError("too_many_jobs", refusal)
-            repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
+            repo = find_repo(s, source.url)
             if repo is None:
                 name = source.url.split("/")[-1].removesuffix(".git")
                 repo = Repo(url=source.url, name=name)

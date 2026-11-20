@@ -26,7 +26,7 @@ from thinair.jobs.events import TERMINAL_STATUSES
 from thinair.jobs.executors import agents_dir
 from thinair.jobs.pr import PRError
 from thinair.jobs.service import JobService
-from thinair.project.prepare import GitSource, PrepareError
+from thinair.project.prepare import GitSource, PrepareError, find_repo
 from thinair.users import (
     OWNER_NAME,
     Principal,
@@ -218,7 +218,7 @@ def add_repo(body: RepoIn, who: Principal = Depends(require_auth)) -> Repo:
         raise _err(422, e.code, e.message) from e
     created = False
     with session_scope() as s:
-        repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
+        repo = find_repo(s, source.url)
         if repo is None:
             repo = Repo(url=source.url, name=source.url.split("/")[-1].removesuffix(".git"))
             s.add(repo)
@@ -277,7 +277,7 @@ def create_job(
             repo: Repo | None = _visible_repo(s, body.repo_id, who)
         else:
             assert url is not None
-            repo = s.exec(select(Repo).where(Repo.url == url.strip().rstrip("/"))).first()
+            repo = find_repo(s, url)
         if repo is not None:
             url = repo.url
             agent_id = agent_id or repo.default_agent_id
