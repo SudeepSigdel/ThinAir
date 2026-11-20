@@ -212,3 +212,21 @@ def test_github_app_check_makes_no_network_call(monkeypatch) -> None:
         )
     )
     assert doctor._github_app().status == "ok"
+
+
+def test_caddy_plus_a_publicly_published_app_port_is_flagged(monkeypatch) -> None:
+    """Audit A4: with Caddy configured, forwarded addresses are believed from private ranges.
+    That is only safe while the app's own port is not reachable from outside."""
+    monkeypatch.setenv("THINAIR_ADMIN_TOKEN", "a" * 40)
+    monkeypatch.setenv("THINAIR_PUBLIC_URL", "https://thinair.example.com")
+    monkeypatch.setenv("THINAIR_DOMAIN", "thinair.example.com")
+    monkeypatch.delenv("THINAIR_BIND", raising=False)
+    get_settings.cache_clear()
+    upgrade(get_engine())
+    c = by_name(run_checks(FakeDocker(), online=False))
+    assert c["Proxy trust"].status == "ok"  # published on 127.0.0.1 only (the default)
+
+    monkeypatch.setenv("THINAIR_BIND", "0.0.0.0")
+    c = by_name(run_checks(FakeDocker(), online=False))
+    assert c["Proxy trust"].status == "warn"
+    assert "THINAIR_BIND" in c["Proxy trust"].fix and "forge" in c["Proxy trust"].detail

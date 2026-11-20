@@ -187,7 +187,7 @@ def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, truste
 
     monkeypatch.setenv("THINAIR_ADMIN_TOKEN", TOKEN)
     get_settings.cache_clear()
-    assert "127.0.0.1" in get_settings().trusted_proxies  # the default trusts local proxies
+    assert "127.0.0.1" in get_settings().effective_trusted_proxies  # local proxies are trusted
     server, thread, sock, base = _live_server("127.0.0.1" if trusted else "192.0.2.1")
     try:
         bad = {"Authorization": "Bearer wrong-guess"}
@@ -206,3 +206,45 @@ def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, truste
         server.should_exit = True
         thread.join(10)
         sock.close()
+
+
+# ---- audit A4: who may say "this request came from X" ---------------------------------------------
+def test_forwarded_headers_are_trusted_from_loopback_only_unless_caddy_is_configured(
+    monkeypatch,
+) -> None:
+    """Regression: the default trusted every private range. When the port is published directly,
+    Docker's userland proxy, IPv6 publishing and rootless Docker make every client look like the
+    bridge gateway (172.x), so a forged X-Forwarded-For became its throttle key and the
+    failed-login throttle could be dodged. Private ranges are now trusted only when Caddy is
+    configured (THINAIR_DOMAIN), where the published port is loopback-only by default."""
+    for var in ("THINAIR_TRUSTED_PROXIES", "THINAIR_DOMAIN"):
+        monkeypatch.delenv(var, raising=False)
+    get_settings.cache_clear()
+    assert get_settings().effective_trusted_proxies == "127.0.0.1,::1"
+
+    monkeypatch.setenv("THINAIR_DOMAIN", "203-0-113-7.sslip.io")
+    get_settings.cache_clear()
+    private = get_settings().effective_trusted_proxies
+    assert "172.16.0.0/12" in private and "127.0.0.1" in private
+
+    monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "192.0.2.1")  # an explicit choice always wins
+    get_settings.cache_clear()
+    assert get_settings().effective_trusted_proxies == "192.0.2.1"
+
+    monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "  ")  # blank (as in .env.example) = unset
+    get_settings.cache_clear()
+    assert get_settings().effective_trusted_proxies == private
+
+
+def test_a_flood_of_wrong_tokens_from_many_addresses_still_slows_guessing(monkeypatch) -> None:
+    """Backstop for A4: even if a client can pick its own address for every request, the failures
+    add up. After 200 in a minute across all addresses, short tokens are refused unchecked (as
+    for a throttled address); long generated tokens still sign in."""
+    monkeypatch.setenv("THINAIR_ADMIN_TOKEN", TOKEN)
+    get_settings.cache_clear()
+    with TestClient(create_app({})) as c:
+        for i in range(api_auth._GLOBAL_FAIL_LIMIT):
+            api_auth.record_failure(f"198.51.100.{i}")  # every attacker address is new
+        short = {"Authorization": "Bearer " + "g" * 20}
+        assert c.get("/api/me", headers=short).status_code == 429
+        assert c.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200

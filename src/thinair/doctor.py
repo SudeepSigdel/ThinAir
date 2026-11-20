@@ -62,6 +62,7 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
 
     guard("docker", _docker_all)
     guard("phone access", _phone)
+    guard("proxy trust", _proxy_trust)
     guard("public address", lambda: _public_address(online))
     guard("https", lambda: _https(online))
     guard("github app", _github_app)
@@ -334,6 +335,30 @@ def _phone() -> Check:
         "THINAIR_PHONE=auto: with a public IP it sets up https://<your-ip>.sslip.io by itself, "
         "otherwise it offers Tailscale. Or use your own domain (THINAIR_PHONE=domain).",
     )
+
+
+def _proxy_trust() -> list[Check]:
+    """With Caddy configured, forwarded addresses are believed from private ranges. That holds only
+    while the app's own port is published on loopback (the default): otherwise a client can reach
+    the app directly and forge the address the failed-login throttle counts."""
+    import os
+
+    s = get_settings()
+    if not s.domain or s.trusted_proxies.strip():
+        return []  # no Caddy (only loopback is trusted), or the owner chose explicitly
+    bind = (os.environ.get("THINAIR_BIND") or "127.0.0.1").strip()
+    if bind in ("127.0.0.1", "::1", "localhost"):
+        return [Check("ok", "Proxy trust", "the app port is published on this machine only")]
+    return [
+        Check(
+            "warn",
+            "Proxy trust",
+            f"Caddy is on, but the app's own port is also published on {bind}: clients can reach "
+            "it directly and forge the address the login throttle counts",
+            "Remove THINAIR_BIND from .env (or set it to 127.0.0.1) and run "
+            "`docker compose up -d`, so only Caddy is reachable from outside.",
+        )
+    ]
 
 
 REINSTALL = (
