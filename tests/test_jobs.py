@@ -218,6 +218,13 @@ async def test_restart_recovery() -> None:
     try:
         assert (await until_finished(running.id)).error_code == "interrupted"
         assert (await until_finished(queued.id)).status == JobStatus.SUCCEEDED
+        # Regression (audit A2): the recovered job also needs its final STATUS event. The web
+        # page closes its stream and loads the result on that event; without it the stream ended
+        # silently and the browser reconnected forever.
+        final = [e for e in events_of(running.id) if e.type == EventType.STATUS][-1]
+        assert final.data["status"] == "failed" and final.data["error_code"] == "interrupted"
+        frames = [f async for f in svc.events.stream(running.id, 0)]
+        assert any("event: status" in f and '"interrupted"' in f for f in frames)
     finally:
         await svc.stop()
 

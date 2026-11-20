@@ -129,17 +129,19 @@ class JobService:
             jobs = list(
                 s.exec(select(Job).where(Job.status.in_([JobStatus.RUNNING, JobStatus.QUEUED])))
             )  # type: ignore[attr-defined]
-            jobs.sort(key=lambda j: j.created_at)
-            for j in jobs:
-                if j.status == JobStatus.RUNNING:
-                    self._finish_row(
-                        j.id,
-                        JobStatus.FAILED,
-                        "interrupted",
-                        "Thinair restarted while this job was running. Retry it.",
-                    )
-                else:
-                    self._route(j)
+        jobs.sort(key=lambda j: j.created_at)
+        for j in jobs:
+            if j.status == JobStatus.RUNNING:
+                # `_finish`, not `_finish_row`: the final STATUS event is what tells an open or
+                # reconnecting page that the job is over.
+                self._finish(
+                    j.id,
+                    JobStatus.FAILED,
+                    "interrupted",
+                    "Thinair restarted while this job was running. Retry it.",
+                )
+            else:
+                self._route(j)
 
     # ---- API used by routes --------------------------------------------------------------
     def submit(
