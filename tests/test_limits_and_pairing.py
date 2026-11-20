@@ -184,3 +184,37 @@ def test_qr_ttl_for_the_installer(monkeypatch) -> None:
         with pytest.raises(ValueError):
             create_pairing_code(s, ttl=timedelta(hours=2))
     assert runner.invoke(cli, ["qr", "--ttl", "61"]).exit_code != 0  # an hour at most
+
+
+def test_a_code_redeemed_by_two_requests_at_once_signs_in_only_one() -> None:
+    """Regression (audit A3): redeem() read the row, checked `used_at`, then wrote it, so two
+    simultaneous requests (the route runs in a thread pool) both got a token from one code. The
+    barrier holds both between the read and the write, which is the worst case."""
+    import threading
+
+    import thinair.pairing as pairing
+
+    with session_scope() as s:
+        code = create_pairing_code(s)
+    real_find, barrier, tokens = pairing._find, threading.Barrier(2, timeout=5), []
+
+    def find_then_wait(session, c):
+        row = real_find(session, c)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:  # the fixed code never gets both threads here
+            pass
+        return row
+
+    def go() -> None:
+        with session_scope() as s:
+            tokens.append(pairing.redeem(s, code))
+
+    pairing._find = find_then_wait
+    try:
+        threads = [threading.Thread(target=go) for _ in range(2)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+    finally:
+        pairing._find = real_find
+    assert sum(1 for t in tokens if t) == 1
