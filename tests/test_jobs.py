@@ -410,6 +410,39 @@ async def test_log_cap_counts_bytes_not_only_lines() -> None:
         await svc.stop()
 
 
+async def test_a_failed_final_write_is_retried(monkeypatch) -> None:
+    """Audit A12: if the database refused the job's final write once (a locked file, a dropped
+    connection), the error handler wrote a second, wrong outcome ("internal error") with a second
+    final event, or left the job RUNNING. Now the same outcome is written again."""
+    from thinair.jobs import service as service_mod
+
+    real = JobService._finish_row
+    calls = {"n": 0}
+
+    def flaky(job_id, status, code, message):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is locked")
+        return real(job_id, status, code, message)
+
+    monkeypatch.setattr(JobService, "_finish_row", staticmethod(flaky))
+    monkeypatch.setattr(service_mod, "SETTLE_RETRY_S", 0.01, raising=False)
+    svc = await make_service(ok_executor)
+    try:
+        job = await until_finished(svc.submit(URL).id)
+        assert job.status == JobStatus.SUCCEEDED and calls["n"] == 2
+        finals = [
+            e
+            for e in events_of(job.id)
+            if e.type == EventType.STATUS
+            and e.data["status"] != "queued"
+            and e.data["status"] != "running"
+        ]
+        assert [e.data["status"] for e in finals] == ["succeeded"]  # one final event, the true one
+    finally:
+        await svc.stop()
+
+
 async def test_concurrent_jobs_have_independent_sequences() -> None:
     svc = await make_service(ok_executor, workers=3)
     try:
