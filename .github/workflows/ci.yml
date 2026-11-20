@@ -48,4 +48,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev --extra postgres
-      - run: uv run pytest -m docker
+      # These three modules are only exercised by the Docker tests. Measured 2026-11: 81% / 91% /
+      # 90% (86% together); the floor leaves room for ordinary change and catches a real drop.
+      - run: >-
+          uv run --with pytest-cov pytest -m docker
+          --cov=thinair.sandbox.manager --cov=thinair.agents.cli_adapter
+          --cov=thinair.project.prepare --cov-fail-under=80
