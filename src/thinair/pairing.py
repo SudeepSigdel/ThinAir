@@ -114,9 +114,16 @@ def redeem(session: Session, code: str) -> str | None:
         user = session.get(User, row.user_id)
         if user is None or user.disabled_at is not None:
             return None
-    row.used_at = now
-    session.add(row)
+    # Conditional update, so two simultaneous requests with the same code cannot both win (the
+    # checks above only read): exactly one sees a row it actually changed.
+    won = session.exec(
+        update(PairingCode)  # type: ignore[call-overload]
+        .where(PairingCode.code_hash == row.code_hash, PairingCode.used_at.is_(None))  # type: ignore[union-attr]
+        .values(used_at=now)
+    )
     session.commit()
+    if won.rowcount != 1:
+        return None
     from thinair.setup_state import mark
 
     mark("paired", row.user_id)

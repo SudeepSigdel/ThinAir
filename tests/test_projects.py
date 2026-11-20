@@ -127,3 +127,28 @@ def test_dependency_caches_are_per_user_and_per_repo() -> None:
     assert cache_volume(A, "bob") != cache_volume(B, "bob")
     assert cache_volume(A, "bob") == cache_volume(A, "bob")
     assert cache_volume(A, "bob").startswith("thinair-cache-")
+
+
+def test_one_repository_in_any_spelling_is_one_project(client) -> None:
+    """Regression (audit A9): GitHub names are case-insensitive and `.git` is optional, but each
+    spelling became its own project (split history, defaults and visibility)."""
+    c = client
+    ids = {
+        c.post("/api/repos", json={"url": u}).json()["id"]
+        for u in (
+            "https://github.com/Octo/Gamma",
+            "https://github.com/octo/gamma",
+            "https://github.com/octo/gamma.git",
+            "https://github.com/OCTO/gamma/",
+        )
+    }
+    assert len(ids) == 1
+    job = c.post("/api/jobs", json={"repo_url": "https://github.com/octo/GAMMA.git"}).json()
+    assert job["repo_id"] in ids
+    assert [r["name"] for r in c.get("/api/repos").json()] == ["Gamma"]  # the first spelling stays
+
+
+def test_dot_segments_are_not_repository_names(client) -> None:
+    for bad in ("https://github.com/../x", "https://github.com/x/..", "https://github.com/./x"):
+        r = client.post("/api/repos", json={"url": bad})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_repo_url", bad

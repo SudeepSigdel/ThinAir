@@ -31,16 +31,16 @@ profiler search (97% covered).
 |----|-----|----------|--------|-------|---------|--------|
 | A1 ✅ 225b1f2 | High | Reliability/Security | CONFIRMED | `sandbox/manager.py:578-615` | `_stream_logs` buffers a line without limit: output with no `\n` grows memory and CPU quadratically | S |
 | A2 ✅ cea2e7a | High | Correctness | CONFIRMED | `jobs/service.py:127-142` | Crash recovery writes the `interrupted` status but emits no final STATUS event; SSE ends without one | S |
-| A3 | Medium | Security | CONFIRMED (forced interleaving) | `pairing.py:107-123` | `redeem` is read-then-write: two simultaneous requests both get a token from one one-time code | S |
+| A3 ✅ de61106+test fix | Medium | Security | CONFIRMED (forced interleaving) | `pairing.py:107-123` | `redeem` is read-then-write: two simultaneous requests both get a token from one one-time code | S |
 | A4 | Medium | Security | PLAUSIBLE | `config.py:41`, `cli/main.py` `uvicorn_options` | Trusted proxies include all RFC1918 (the Docker bridge gateway), so a directly published port honours a forged `X-Forwarded-For` | M |
 | A5 | Medium | Security | PLAUSIBLE | `agents/cli_adapter.py:221-222`, `project/detect.py:66` | Repo-controlled `thinair.yaml env` is placed in the agent container (next to the login volume and passthrough API keys) | M |
 | A6 | Medium | Release | CONFIRMED | `release.yml`, `Dockerfile:18` | Images pushed with no CI gate; `pip install .` ignores `uv.lock`; no provenance/SBOM/signature | M |
 | A7 | Medium | Upgrade path | PLAUSIBLE | `install.sh:26,469` | Compose file is fetched from `main` but the image is the latest release: version skew | M |
-| A8 | Low | Correctness | CONFIRMED | `runner_client.py:178-184` | `except (RequestException, ValueError)` precedes `except RunnerSetupError` (a `ValueError`): the "runner disabled, stop" branch is dead | S |
-| A9 | Low | Correctness | CONFIRMED (by reading) | `project/prepare.py:29,54` | `Foo/Bar`, `foo/bar`, `foo/bar.git` become three `Repo` rows; owner/name `..` passes the regex | S |
-| A10 | Low | Correctness | PLAUSIBLE | `jobs/pr.py:437` | PR base = `parent.ref`; a tag/sha ref gives GitHub 422 *after* the branch was pushed | S |
-| A11 | Low | Postgres | PLAUSIBLE | `db/session.py:31` | Naive `timestamp` columns get aware datetimes; non-UTC server timezone shifts stored values | S |
-| A12 | Low | Reliability | PLAUSIBLE | `jobs/service.py:362-368,436-447` | If the final DB write fails (disk full), the job stays RUNNING and its SSE hangs until restart | S |
+| A8 ✅ 61dc607 | Low | Correctness | CONFIRMED | `runner_client.py:178-184` | `except (RequestException, ValueError)` precedes `except RunnerSetupError` (a `ValueError`): the "runner disabled, stop" branch is dead | S |
+| A9 ✅ 1fa2dfa | Low | Correctness | CONFIRMED (by reading) | `project/prepare.py:29,54` | `Foo/Bar`, `foo/bar`, `foo/bar.git` become three `Repo` rows; owner/name `..` passes the regex | S |
+| A10 ⏸ skipped | Low | Correctness | PLAUSIBLE | `jobs/pr.py:437` | PR base = `parent.ref`; a tag/sha ref gives GitHub 422 *after* the branch was pushed | S |
+| A11 ❌ withdrawn | Low | Postgres | PLAUSIBLE | `db/session.py:31` | Naive `timestamp` columns get aware datetimes; non-UTC server timezone shifts stored values | S |
+| A12 ⏸ deferred | Low | Reliability | PLAUSIBLE | `jobs/service.py:362-368,436-447` | If the final DB write fails (disk full), the job stays RUNNING and its SSE hangs until restart | S |
 | A13 | Low | Performance | PLAUSIBLE | `jobs/events.py:41` | Log cap is 50,000 events x up to 8,192 chars (~400 MB/job) | S |
 | A14 | Low | Security | CONFIRMED (by reading) | `api/setup_api.py:144-152` | Any member can start agent-image builds (heavy on 1 GB) | S |
 | A15 | Low | Security | CONFIRMED (by reading) | `api/routes.py:425-446` | An open SSE stream keeps running after its token is revoked / user disabled | S |
@@ -62,7 +62,7 @@ profiler search (97% covered).
 - **Fix.** `_recover`: collect ids first (don't write inside the select session), then call `self._finish(j.id, FAILED, "interrupted", msg)` for RUNNING jobs. Defence in the UI (`views-jobs.js` error handler): if the stream closes and `current.job.finished` is true, `es.close()` and render once.
 - **Test.** Extend `test_restart_recovery`: after start, `events.fetch(running.id)` ends with a STATUS event `failed`; and `[f async for f in events.stream(running.id)]` contains it.
 
-### A3 Medium: pairing code redeemable twice
+### A3 Medium: pairing code redeemable twice ✅ fixed (Batch 2)
 - **Problem.** `redeem` reads the row, checks `used_at is None`, then sets it. The route is a sync `def` (threadpool), so two requests interleave. `onetime.consume_state` already does this right (conditional UPDATE).
 - **Evidence (throwaway script):** two threads forced between read and write: **2 tokens from one code**. Natural window is microseconds, so PLAUSIBLE in the wild, but the "works once" promise in SECURITY.md is only true by luck.
 - **Scenario.** Someone who photographed the QR races the owner within the 10-minute window; both signed in, neither knows.
@@ -91,22 +91,22 @@ profiler search (97% covered).
 - **Fix.** Publish `docker-compose.yml` and `install.sh` as release assets (in `release.yml`), and have the installer fetch the compose file for the resolved version (`.../releases/download/vX.Y.Z/docker-compose.yml`; for `latest`, `.../releases/latest/download/...`; `edge` and `local` keep using main). `THINAIR_RAW_URL` stays for offline tests.
 - **Test.** The existing `docker:cli` installer test with a fake release layout; assert the fetched compose matches the tag.
 
-### A8 Low: disabled runner never stops
+### A8 Low: disabled runner never stops ✅ fixed (Batch 2)
 - **Problem.** `RunnerSetupError(ValueError)` (runner_client.py:37) is swallowed by the earlier `except (requests.RequestException, ValueError)`; pyright flags it as unreachable. Comment says "disabled while working: stop".
 - **Scenario.** Admin disables a runner mid-job: it keeps profiling to the end, posting 401s every tick (each counts toward the failed-token throttle for that address).
 - **Fix.** Put `except RunnerSetupError` first (re-raise path), then the generic one. **Test.** Extend the live-uvicorn runner test: disable the runner while the fake profiler sleeps; assert the client exits and the work task is cancelled.
 
-### A9 Low: repo identity
+### A9 Low: repo identity ✅ fixed (Batch 2)
 - GitHub names are case-insensitive and `.git` is optional, but `GitSource.url` is only stripped of `/`. `https://github.com/Foo/Bar`, `.../foo/bar`, `.../foo/bar.git` become separate `Repo` rows (split history, defaults, member visibility). The regex also accepts `..` as owner/name.
 - **Fix.** Canonicalise in `GitSource` (strip `.git`, lowercase owner and name; reject `.`/`..`), look up existing rows with `func.lower(Repo.url)` so old rows still match (no data migration). **Test.** `test_api.py`: three spellings -> one repo id.
 
-### A10 Low: PR base can be a tag or sha
+### A10 Low: PR base can be a tag or sha ⏸ skipped: the planned fix is wrong
 `base = parent.ref or default_branch` (pr.py:437), and `GIT_REF` allows tags. GitHub returns 422 after the branch is already pushed (stray `thinair/<id>` branch, generic error). **Fix:** `GitHubClient.is_branch(owner, name, ref)` (`GET /branches/{ref}`), else fall back to the default branch and log it. **Test:** `test_pr.py` with the fake HTTP layer.
 
-### A11 Low: Postgres timezone
+### A11 Low: Postgres timezone ❌ withdrawn: false positive
 Columns are naive `timestamp`; code writes aware UTC datetimes. psycopg converts aware values using the session `TimeZone`, so on a non-UTC server `finished_at`, token `last_used_at` and pairing `expires_at` shift (retention cutoff, expiry checks). **Fix:** `make_engine` for Postgres: `connect_args={"options": "-c timezone=UTC"}`. **Test:** `test_postgres_docker.py`: `SHOW timezone` is `UTC`; round-trip an aware datetime on a server started with `TZ=Asia/Kathmandu`.
 
-### A12 Low: failed final write leaves a job RUNNING
+### A12 Low: failed final write leaves a job RUNNING ⏸ deferred: needs a larger change
 `_execute`'s `finally` and `_finish` do DB writes with no fallback; a full disk or locked DB raises inside the worker, the row stays RUNNING, the SSE never ends. **Fix:** wrap `_finish` in a retry (3 tries, 1 s) and, on final failure, log loudly and keep the job id in `self._unsettled`, retried at the next `start()` (already handled by `_recover`). **Test:** executor that returns after monkeypatching `session_scope` to raise once.
 
 ### A13 Low: event cap by count
@@ -152,3 +152,16 @@ Verify manually: restart the server mid-job and open the job on a phone (no reco
 1. Restart the server while a job is running, then open that job on a phone: it must show *failed (interrupted)* and no "Reconnecting..." that never goes away. Open a job that was interrupted *before* this fix: the page must stop reconnecting.
 2. Profile a repo whose test prints 100 MB without a newline (for example `python -c "import sys; sys.stdout.write('A'*10**8)"`) and watch `docker stats`: the server container must stay far below its 256 MiB limit, and the log must show the start of the line followed by later output.
 3. Real-device check of the job page is unchanged otherwise (only an extra early return in the stream's error handler).
+
+## Status of fixes (Batch 2, branch `fix/audit-batch-2`, stacked on batch 1)
+- ✅ A3: `redeem` marks the code used with a conditional UPDATE and only the request that changed the row signs in. The race test (two threads held between read and write) failed on the old code with `2 == 1`. (The first version of the test forgot to create the tables, so it failed for the wrong reason; corrected in a follow-up commit and re-proved against the old code.)
+- ✅ A8: the `RunnerSetupError` clause now comes before the generic `ValueError` clause. Live-server test: a runner disabled mid-job stops and cancels its work (failed before: the worker kept running).
+- ✅ A9: `GitSource` normalises the URL (no trailing slash or `.git`), `find_repo` matches without regard to case and still finds rows saved with `.git` or capitals, `.` and `..` as owner or name are refused, the dependency-cache volume name ignores case, and the repository picker's "added" flag ignores case. No data migration; existing duplicate rows (if any) stay separate until merged by hand.
+- ⏸ A10 skipped: the planned fix (`GET /branches/{ref}`) needs the Contents permission, which the pull-request key deliberately lacks, so every PR with a non-default base would silently target the default branch. A safe alternative (retry with the default branch on GitHub's 422) cannot be verified without a real GitHub account. Revisit with one.
+- ❌ A11 withdrawn: a real PostgreSQL 17 container with the database's time zone set to Asia/Kathmandu stored and returned the same UTC time on the unmodified code. SQLAlchemy's psycopg driver casts the parameter to `timestamp`, and PostgreSQL ignores the offset in that cast. The finding was reasoning without a reproduction; it should not have been listed as plausible.
+- ⏸ A12 deferred: the planned retry cannot help a full disk (the database is the thing failing), a sleeping retry would block the event loop from sync code, and the "unsettled" list duplicates what restart recovery (`_recover`, now emitting its final event) already does. A proper fix means making `_finish` async with a bounded retry; do it only if a real stuck job is ever seen.
+
+### Verify manually (Batch 2)
+1. Pair two browsers with one QR code at the same moment (or script two `POST /api/pair` calls): exactly one signs in.
+2. Disable a runner from the People/CLI screen while it runs a real profile job: the runner process exits with the "server refused the runner secret" message.
+3. Add `https://github.com/<you>/<repo>`, then the same repository with different capitals and with `.git`: one project.

@@ -277,7 +277,7 @@ async def list_repos(
         raise _err(502, "github_unreachable", e.message) from None
     repos.sort(key=lambda x: x.get("pushed_at") or "", reverse=True)
     with session_scope() as s:
-        known = {r.url for r in s.exec(select(Repo))}
+        known = {r.url.lower().removesuffix(".git") for r in s.exec(select(Repo))}
     out = [
         {
             "id": x.get("id"),
@@ -288,7 +288,7 @@ async def list_repos(
             "pushed_at": x.get("pushed_at"),
             "description": (x.get("description") or "")[:200],
             "language": x.get("language"),
-            "added": x.get("html_url") in known,
+            "added": str(x.get("html_url")).lower() in known,
         }
         for x in repos
         if isinstance(x.get("html_url"), str) and x["html_url"].startswith("https://github.com/")
