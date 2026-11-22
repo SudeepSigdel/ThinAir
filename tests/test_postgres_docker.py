@@ -148,3 +148,8 @@ def test_job_api_end_to_end_on_postgres(pg_url, monkeypatch) -> None:
         assert finished(prj["id"])["status"] == "succeeded"
         assert c.get(f"/api/jobs/{aid}/result").json()["pr_url"].endswith("/pull/1")
         assert [j["kind"] for j in c.get("/api/jobs").json()] == ["pr", "agent"]
+        # Deleting the agent job removes its pull-request job first (a foreign key points at the
+        # parent) and every table that references them; Postgres enforces what SQLite lets slide.
+        assert c.delete(f"/api/jobs/{aid}").status_code == 204
+        assert c.get("/api/jobs").json() == []
+        assert c.get(f"/api/jobs/{prj['id']}").status_code == 404
