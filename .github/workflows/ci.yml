@@ -38,9 +38,14 @@ jobs:
   # when the release builds it, or when someone's server starts it. This builds it with the exact
   # versions the release uses, starts it the way Compose does (read-only, no capabilities, uid
   # 10001) and checks that it comes up healthy: migrations run, the dependencies import, and the
-  # web app and API answer.
+  # web app and API answer. Both architectures: the product targets small ARM VMs, and a
+  # dependency can have an x86 build and no ARM one (the ARM runner builds and runs it natively).
   image-smoke:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     env:
       TOKEN: smoke-test-token-not-a-secret-0123456789abcdef
     steps:
