@@ -192,3 +192,25 @@ def test_an_open_event_stream_ends_when_its_token_is_revoked(client, monkeypatch
         row = s.exec(select(ApiToken).where(ApiToken.name == "phone")).one()
         revoke_token(s, row.id)
     assert ended.wait(10), "the stream kept running after the token was revoked"
+
+
+async def test_ending_a_stream_early_closes_the_event_stream_at_once(monkeypatch) -> None:
+    """When the signed-in check ends a stream, the underlying event stream must be closed right
+    away (its cleanup removes the stream's wake-up registration), not whenever the garbage
+    collector gets to it."""
+    from thinair.api import routes
+
+    closed = {"yes": False}
+
+    async def inner():
+        try:
+            while True:
+                yield "frame\n\n"
+        finally:
+            closed["yes"] = True
+
+    frames = inner()  # we hold a reference, so nothing can collect it for us
+    monkeypatch.setattr(routes, "STREAM_RECHECK_S", 0.0)
+    monkeypatch.setattr(routes, "still_signed_in", lambda who: False)
+    got = [f async for f in routes._while_signed_in(frames, who=None)]  # type: ignore[arg-type]
+    assert got == ["frame\n\n"] and closed["yes"]
