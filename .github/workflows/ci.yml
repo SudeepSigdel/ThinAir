@@ -1,19 +1,99 @@
 name: CI
-on: [push, pull_request]
+# Pull requests and main only: a branch with an open PR used to run everything twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -m "not docker"
-  docker-tests:
+      # The installer is piped into sh on other people's machines: keep it shellcheck-clean.
+      - run: shellcheck install.sh
+
+  # Known vulnerabilities in the locked dependencies. Informational (does not block a merge): a new
+  # advisory should not turn every unrelated pull request red.
+  audit:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv export --frozen --no-hashes --all-extras --no-emit-project > requirements.audit.txt
+      - run: uvx pip-audit -r requirements.audit.txt --no-deps --disable-pip
+
+  # The server image is not started by any other job: the tests run on the runner's own Python
+  # (not the image's), so a change to the image's Python version or dependencies would only show up
+  # when the release builds it, or when someone's server starts it. This builds it with the exact
+  # versions the release uses, starts it the way Compose does (read-only, no capabilities, uid
+  # 10001) and checks that it comes up healthy: migrations run, the dependencies import, and the
+  # web app and API answer. Both architectures: the product targets small ARM VMs, and a
+  # dependency can have an x86 build and no ARM one (the ARM runner builds and runs it natively).
+  image-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      TOKEN: smoke-test-token-not-a-secret-0123456789abcdef
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv export --frozen --no-hashes --no-dev --extra postgres --no-emit-project > constraints.txt
+      - run: docker build --build-arg EXTRAS=postgres -t thinair-smoke .
+      - name: Start it like Compose does
+        run: |
+          docker run -d --name smoke --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges:true -v smoke-data:/data -p 8080:8080 \
+            -e THINAIR_ADMIN_TOKEN="$TOKEN" -e THINAIR_DATA_DIR=/data \
+            -e THINAIR_SWEEP_ON_START=false thinair-smoke
+          for i in $(seq 1 30); do
+            curl -fsS localhost:8080/healthz && exit 0
+            sleep 2
+          done
+          echo "the server did not become healthy"; exit 1
+      - name: Dependencies import in the image's Python
+        run: docker exec smoke python -c "import cryptography, psycopg, fastapi, sqlmodel, segno, yaml, requests, docker; import sys; print('python', sys.version.split()[0], 'imports ok')"
+      - name: The web app and the API answer
+        run: |
+          curl -fsS localhost:8080/ | grep -qi "<title"
+          curl -fsS -H "Authorization: Bearer $TOKEN" localhost:8080/api/me | grep -q '"is_admin":true'
+          code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/me)
+          test "$code" = 401  # and it still refuses without a token
+      - name: Server log
+        if: always()
+        run: docker logs smoke 2>&1 | tail -40
+
+  docker-tests:
+    # ARM matters: the product targets small ARM VMs. That leg is informational until it has
+    # run green a few times (it was never run before).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-latest, experimental: false}
+          - {runner: ubuntu-24.04-arm, experimental: true}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev --extra postgres
-      - run: uv run pytest -m docker
+      # These three modules are only exercised by the Docker tests. Measured 2026-11: 81% / 91% /
+      # 90% (86% together); the floor leaves room for ordinary change and catches a real drop.
+      - run: >-
+          uv run --with pytest-cov pytest -m docker
+          --cov=thinair.sandbox.manager --cov=thinair.agents.cli_adapter
+          --cov=thinair.project.prepare --cov-fail-under=80

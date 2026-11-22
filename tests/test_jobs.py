@@ -218,6 +218,13 @@ async def test_restart_recovery() -> None:
     try:
         assert (await until_finished(running.id)).error_code == "interrupted"
         assert (await until_finished(queued.id)).status == JobStatus.SUCCEEDED
+        # Regression (audit A2): the recovered job also needs its final STATUS event. The web
+        # page closes its stream and loads the result on that event; without it the stream ended
+        # silently and the browser reconnected forever.
+        final = [e for e in events_of(running.id) if e.type == EventType.STATUS][-1]
+        assert final.data["status"] == "failed" and final.data["error_code"] == "interrupted"
+        frames = [f async for f in svc.events.stream(running.id, 0)]
+        assert any("event: status" in f and '"interrupted"' in f for f in frames)
     finally:
         await svc.stop()
 
@@ -375,6 +382,63 @@ async def test_event_cap_drops_logs_but_keeps_status() -> None:
         logs = [e for e in evs if e.type == EventType.LOG]
         assert len(logs) <= 5 and any("log limit" in e.data["line"] for e in logs)
         assert evs[-1].data["status"] == "succeeded"  # lifecycle events are never dropped
+    finally:
+        await svc.stop()
+
+
+async def test_log_cap_counts_bytes_not_only_lines() -> None:
+    """Audit A13: the cap was 50,000 lines of up to 8,192 characters each (about 400 MB in the
+    database for one job). It now also stops at a number of bytes."""
+    store = EventStore(max_log_bytes=1000)
+
+    async def wordy(ctx, _mgr):
+        for _ in range(100):
+            ctx.log("x" * 100)  # 10,000 bytes in all
+        return ExecResult()
+
+    svc = JobService({JobKind.PROFILE: wordy}, events=store, sweep_on_start=False)
+    await svc.start()
+    try:
+        job = await until_finished(svc.submit(URL).id)
+        evs = store.fetch(job.id, limit=1000)
+        logs = [e.data["line"] for e in evs if e.type == EventType.LOG]
+        stored = sum(len(x) for x in logs if x.startswith("x"))
+        assert stored <= 1000 and len(logs) <= 11, (stored, len(logs))
+        assert logs[-1].startswith("[thinair] log limit reached")
+        assert evs[-1].data["status"] == "succeeded"  # lifecycle events are never dropped
+    finally:
+        await svc.stop()
+
+
+async def test_a_failed_final_write_is_retried(monkeypatch) -> None:
+    """Audit A12: if the database refused the job's final write once (a locked file, a dropped
+    connection), the error handler wrote a second, wrong outcome ("internal error") with a second
+    final event, or left the job RUNNING. Now the same outcome is written again."""
+    from thinair.jobs import service as service_mod
+
+    real = JobService._finish_row
+    calls = {"n": 0}
+
+    def flaky(job_id, status, code, message):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is locked")
+        return real(job_id, status, code, message)
+
+    monkeypatch.setattr(JobService, "_finish_row", staticmethod(flaky))
+    monkeypatch.setattr(service_mod, "SETTLE_RETRY_S", 0.01, raising=False)
+    svc = await make_service(ok_executor)
+    try:
+        job = await until_finished(svc.submit(URL).id)
+        assert job.status == JobStatus.SUCCEEDED and calls["n"] == 2
+        finals = [
+            e
+            for e in events_of(job.id)
+            if e.type == EventType.STATUS
+            and e.data["status"] != "queued"
+            and e.data["status"] != "running"
+        ]
+        assert [e.data["status"] for e in finals] == ["succeeded"]  # one final event, the true one
     finally:
         await svc.stop()
 

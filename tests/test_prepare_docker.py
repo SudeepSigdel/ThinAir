@@ -74,6 +74,27 @@ async def test_invalid_thinair_yaml_is_reported_cleanly(mgr, cleanup, tmp_path) 
     assert e.value.code == "config_invalid" and "tset" in e.value.message
 
 
+async def test_a_project_in_a_subfolder_is_found_without_a_workdir(mgr, cleanup, tmp_path) -> None:
+    """The top folder holds no project file, the project lives in backend/: detection looks one
+    or two levels down instead of failing with "could not detect the project type"."""
+    (tmp_path / "README.md").write_text("a monorepo\n")
+    (tmp_path / "thinair.yaml").write_text('install: "true"\ntest: "test -f marker.txt"\n')
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "requirements.txt").write_text("")
+    (tmp_path / "backend" / "marker.txt").write_text("here\n")
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "package.json").write_text("{}")  # a second project: python wins
+    logs: list[str] = []
+    prepared = await prepare_workspace(mgr, DirSource(tmp_path), "t5mono", logs.append)
+    cleanup.append(prepared.volume)
+    assert prepared.resolved.stack == "python"
+    assert prepared.resolved.workdir == "/workspace/backend"
+    said = " ".join(logs)
+    assert "no project in the top folder" in said and "frontend" in said  # it says what it chose
+    ok, out = await run_tests(mgr, prepared, 256 * 1024**2)  # runs in backend/, where marker.txt is
+    assert ok.exit_code == 0, "\n".join(out[-10:])
+
+
 async def test_failing_install_gives_actionable_error_and_cleans_up(mgr, cleanup, tmp_path) -> None:
     (tmp_path / "thinair.yaml").write_text("stack: python\ninstall: exit 7\n")
     with pytest.raises(PrepareError) as e:

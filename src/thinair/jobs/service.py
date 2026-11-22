@@ -18,7 +18,7 @@ from thinair import setup_state
 from thinair.db.models import EventType, Job, JobKind, JobStatus, Repo, utcnow
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES, EventStore
-from thinair.project.prepare import GitSource, PrepareError
+from thinair.project.prepare import GitSource, PrepareError, find_repo
 from thinair.sandbox import janitor
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError
@@ -129,17 +129,19 @@ class JobService:
             jobs = list(
                 s.exec(select(Job).where(Job.status.in_([JobStatus.RUNNING, JobStatus.QUEUED])))
             )  # type: ignore[attr-defined]
-            jobs.sort(key=lambda j: j.created_at)
-            for j in jobs:
-                if j.status == JobStatus.RUNNING:
-                    self._finish_row(
-                        j.id,
-                        JobStatus.FAILED,
-                        "interrupted",
-                        "Thinair restarted while this job was running. Retry it.",
-                    )
-                else:
-                    self._route(j)
+        jobs.sort(key=lambda j: j.created_at)
+        for j in jobs:
+            if j.status == JobStatus.RUNNING:
+                # `_finish`, not `_finish_row`: the final STATUS event is what tells an open or
+                # reconnecting page that the job is over.
+                self._finish(
+                    j.id,
+                    JobStatus.FAILED,
+                    "interrupted",
+                    "Thinair restarted while this job was running. Retry it.",
+                )
+            else:
+                self._route(j)
 
     # ---- API used by routes --------------------------------------------------------------
     def submit(
@@ -169,7 +171,7 @@ class JobService:
             refusal = too_many_jobs(s, user_id)
             if refusal:
                 raise PrepareError("too_many_jobs", refusal)
-            repo = s.exec(select(Repo).where(Repo.url == source.url)).first()
+            repo = find_repo(s, source.url)
             if repo is None:
                 name = source.url.split("/")[-1].removesuffix(".git")
                 repo = Repo(url=source.url, name=name)
@@ -330,10 +332,10 @@ class JobService:
             if remote and res.status == JobStatus.QUEUED:
                 requeued = self._requeue_locally(job_id)
             else:
-                self._finish(job_id, res.status, res.error_code, res.error_message)
+                await self._settle(job_id, res.status, res.error_code, res.error_message)
         except TimeoutError:
             if timeout.expired():
-                self._finish(
+                await self._settle(
                     job_id,
                     JobStatus.TIMEOUT,
                     "timeout",
@@ -341,24 +343,24 @@ class JobService:
                 )
             else:
                 log.exception("job %s raised TimeoutError", job_id)
-                self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
+                await self._settle(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         except asyncio.CancelledError:
             if job_id in self._user_cancelled and not self._stopping:
-                self._finish(job_id, JobStatus.CANCELLED, "cancelled", "Cancelled by user")
+                await self._settle(job_id, JobStatus.CANCELLED, "cancelled", "Cancelled by user")
             else:
-                self._finish(
+                await self._settle(
                     job_id,
                     JobStatus.FAILED,
                     "interrupted",
                     "Thinair was stopped while this job was running. Retry it.",
                 )
         except PrepareError as e:
-            self._finish(job_id, JobStatus.FAILED, e.code, e.message)
+            await self._settle(job_id, JobStatus.FAILED, e.code, e.message)
         except SandboxError as e:
-            self._finish(job_id, JobStatus.FAILED, "sandbox_error", str(e))
+            await self._settle(job_id, JobStatus.FAILED, "sandbox_error", str(e))
         except Exception:
             log.exception("job %s failed unexpectedly", job_id)
-            self._finish(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
+            await self._settle(job_id, JobStatus.FAILED, "internal_error", _INTERNAL)
         finally:
             self._contexts.pop(job_id, None)
             self._attention_at.pop(job_id, None)
@@ -446,6 +448,32 @@ class JobService:
         self._finish_row(job_id, status, code, message)
         self.events.forget(job_id)
 
+    async def _settle(
+        self, job_id: str, status: JobStatus, code: str | None, message: str | None
+    ) -> None:
+        """`_finish` for a running job, tolerating a database that refuses a write for a moment
+        (a locked file, a dropped connection): the final event is stored once, the row write is
+        retried. If it never succeeds the job stays RUNNING in the database and the next start
+        marks it interrupted (`_recover`)."""
+        emitted = False
+        for attempt in range(1, SETTLE_ATTEMPTS + 1):
+            try:
+                if not emitted:
+                    self.events.emit(
+                        job_id,
+                        EventType.STATUS,
+                        {"status": status.value, "error_code": code, "error_message": message},
+                    )
+                    emitted = True
+                self._finish_row(job_id, status, code, message)
+                self.events.forget(job_id)
+                return
+            except Exception:
+                log.exception("job %s: could not store its final state (try %d)", job_id, attempt)
+                if attempt < SETTLE_ATTEMPTS:
+                    await asyncio.sleep(SETTLE_RETRY_S)
+        log.error("job %s stays running in the database until the next start", job_id)
+
     @staticmethod
     def _finish_row(job_id: str, status: JobStatus, code: str | None, message: str | None) -> None:
         with session_scope() as s:
@@ -461,6 +489,7 @@ class JobService:
 
 
 ATTENTION_DEBOUNCE_S = 60.0
+SETTLE_ATTEMPTS, SETTLE_RETRY_S = 3, 1.0
 
 
 def _now() -> float:  # a seam so tests can move the clock without touching asyncio's

@@ -305,6 +305,13 @@ function follow(id) {
     }
   });
   es.addEventListener("error", async () => {
+    // A stream that ends with no final status event (jobs interrupted by a restart before the
+    // server sent one) would reconnect forever: if the job is already finished, stop.
+    if (current.job && current.job.id === id && current.job.finished) {
+      es.close();
+      show("job-conn", false);
+      return;
+    }
     if (es.readyState === EventSource.CONNECTING && current.jobId === id) show("job-conn"); // resumes by itself
     if (es.readyState === EventSource.CLOSED) {
       try {

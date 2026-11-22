@@ -20,7 +20,15 @@ from pathlib import Path
 from thinair.config import get_settings
 from thinair.github import GitHubAccess, GitHubTokenError, git_auth_env
 from thinair.project.config import ProjectConfig, ProjectConfigError, parse_project_config
-from thinair.project.detect import IMAGES, PYTHON_IMAGE, ResolvedProject, resolve_project
+from thinair.project.detect import (
+    IMAGES,
+    MANIFESTS,
+    PYTHON_IMAGE,
+    ResolvedProject,
+    choose_workdir,
+    detect_stack,
+    resolve_project,
+)
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError, SandboxSpec, VolumeMount
 
@@ -51,8 +59,13 @@ class GitSource:
     url: str
     ref: str | None = None
 
+    def __post_init__(self) -> None:
+        # One spelling for storing and cloning: no trailing slash or `.git`. (Case is kept for
+        # display; GitHub ignores it, and `find_repo` matches without it.)
+        object.__setattr__(self, "url", self.url.strip().rstrip("/").removesuffix(".git"))
+
     def validate(self) -> None:
-        if not GITHUB_URL.match(self.url):
+        if not GITHUB_URL.match(self.url) or {".", ".."} & set(self.url.split("/")[3:]):
             raise PrepareError(
                 "bad_repo_url",
                 "Only GitHub repositories are supported for now, "
@@ -72,6 +85,19 @@ class PreparedProject:
     volume: str
     resolved: ResolvedProject
     commit_sha: str | None
+
+
+def find_repo(session, url: str):  # noqa: ANN001, ANN201
+    """The stored `Repo` for this URL, whatever its spelling (case, `.git`, trailing slash), or
+    None. Rows saved before URLs were normalised may still carry `.git` or capitals."""
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    from thinair.db.models import Repo
+
+    canon = url.strip().rstrip("/").removesuffix(".git").lower()
+    q = select(Repo).where(func.lower(Repo.url).in_([canon, canon + ".git"]))
+    return session.exec(q.order_by(Repo.created_at)).first()
 
 
 def workspace_volume(job_id: str) -> str:
@@ -95,7 +121,7 @@ CACHE_ENV = {
 
 def cache_volume(repo_url: str, scope: str) -> str:
     """Name of the dependency cache for `repo_url` as used by `scope` (a user name)."""
-    digest = hashlib.sha256(f"{scope} {repo_url}".encode()).hexdigest()[:20]
+    digest = hashlib.sha256(f"{scope} {repo_url.lower()}".encode()).hexdigest()[:20]
     return f"thinair-cache-{digest}"
 
 
@@ -164,6 +190,21 @@ async def _list_names(mgr, job_id, volume, subdir: str = ".") -> set[str]:
     return set(lines) if code == 0 else set()
 
 
+async def _find_manifests(mgr, job_id, volume) -> list[str]:
+    """Project files up to three levels down (paths relative to the repo root), in one run."""
+    names: list[str] = []
+    for i, name in enumerate(MANIFESTS):
+        names += (["-o"] if i else []) + ["-name", name]
+    code, lines = await _read_only(
+        mgr,
+        job_id,
+        volume,
+        ["find", "/workspace", "-maxdepth", "3", "-type", "f", "(", *names, ")"],
+    )
+    prefix = "/workspace/"
+    return [ln[len(prefix) :] for ln in lines if code == 0 and ln.startswith(prefix)]
+
+
 async def _read_text(mgr, job_id, volume, rel: str) -> str | None:
     code, lines = await _read_only(mgr, job_id, volume, ["cat", "--", f"/workspace/{rel}"])
     return "\n".join(lines) if code == 0 else None
@@ -201,6 +242,13 @@ async def prepare_workspace(
             else None
         )
         config = parse_project_config(cfg_text)
+        if config.workdir == "." and config.stack == "auto" and detect_stack(names) is None:
+            # Nothing in the top folder: the project may live in a subfolder (a monorepo).
+            sub, note = choose_workdir(await _find_manifests(mgr, job_id, volume))
+            if sub:
+                said = f" ({note})" if note else ""
+                log(f"[thinair] no project in the top folder; using {sub}/{said}")
+                config = config.model_copy(update={"workdir": sub})
         if config.workdir != ".":
             names = await _list_names(mgr, job_id, volume, config.workdir)
         resolved = resolve_project(names, config)

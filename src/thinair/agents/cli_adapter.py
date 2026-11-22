@@ -40,6 +40,17 @@ MAX_PATCH_BYTES = 5 * 1024**2
 PATCH_PATH = ".git/thinair.patch"  # inside the workspace, outside the working tree
 # Dependency folders created by the install step are never part of the agent's change.
 DIFF_EXCLUDES = [":(exclude).venv", ":(exclude)node_modules"]
+# Settings from a repository's thinair.yaml `env:` that never reach an agent. The agent container
+# holds the login volume and any passthrough API key, so a repo that sets `OPENAI_BASE_URL` (or a
+# proxy, a CA bundle, a preloaded library) would make the agent's CLI send its credentials to the
+# repo's author with no cooperation from the agent. Install and test steps still get all of it.
+_BLOCKED_REPO_ENV = re.compile(
+    r"^(NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR"
+    r"|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|GIT_SSL_NO_VERIFY|LD_.*|.*PROXY.*"
+    r"|(ANTHROPIC|OPENAI|GEMINI|GOOGLE|CODEX|CLAUDE|COPILOT|GH|GITHUB)_.*"
+    r"|(.*_)?(BASE_URL|API_BASE|API_URL|ENDPOINT))$",
+    re.IGNORECASE,
+)
 _GIT_ID = ["-c", "user.name=Thinair", "-c", "user.email=thinair@localhost"]
 _GIT_SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", *_GIT_ID]
 
@@ -218,8 +229,18 @@ class CLIAdapter:
         user = self.auth_volume.rsplit(".", 1)[-1]
         return f"{self.cfg.auth_hint} Logins are per user: add `--user {user}`."
 
+    def ignored_repo_env(self) -> list[str]:
+        """Names from the repo's thinair.yaml `env:` that are not passed to the agent."""
+        return [k for k in self._p.resolved.config.env if _BLOCKED_REPO_ENV.match(k)]
+
     def _env(self) -> dict[str, str]:
-        return {**self._p.resolved.env, **self.cfg.env, **self._passthrough}
+        repo = self._p.resolved.config.env
+        base = {
+            k: v
+            for k, v in self._p.resolved.env.items()
+            if not (k in repo and _BLOCKED_REPO_ENV.match(k))
+        }
+        return {**base, **self.cfg.env, **self._passthrough}
 
     def _spec(self, command: list[str], **kw: Any) -> SandboxSpec:
         lim = self.cfg.limits
@@ -270,6 +291,12 @@ class CLIAdapter:
     # -- AgentAdapter --
     async def prepare(self, log: LogFn) -> None:
         stack = self._p.resolved.stack
+        if ignored := self.ignored_repo_env():
+            log(
+                "[thinair] not passing these thinair.yaml settings to the agent (endpoints, "
+                f"proxies, certificates and credentials are never taken from a repository): "
+                f"{', '.join(ignored)}"
+            )
         self._image = await ensure_agent_image(self._mgr, self.cfg, stack, log)
         await ensure_image(self._mgr, "git", log)
         await asyncio.to_thread(

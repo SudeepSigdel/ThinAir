@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from thinair import config
 from thinair.config import get_settings
 
 Status = Literal["ok", "warn", "fail"]
@@ -62,6 +63,7 @@ def run_checks(mgr=None, *, online: bool = True) -> list[Check]:  # noqa: ANN001
 
     guard("docker", _docker_all)
     guard("phone access", _phone)
+    guard("proxy trust", _proxy_trust)
     guard("public address", lambda: _public_address(online))
     guard("https", lambda: _https(online))
     guard("github app", _github_app)
@@ -334,6 +336,28 @@ def _phone() -> Check:
         "THINAIR_PHONE=auto: with a public IP it sets up https://<your-ip>.sslip.io by itself, "
         "otherwise it offers Tailscale. Or use your own domain (THINAIR_PHONE=domain).",
     )
+
+
+def _proxy_trust() -> list[Check]:
+    """Forwarded addresses (from Caddy or `tailscale serve`) are believed from the Docker network
+    only while the app's own port is published on this machine alone. Published publicly, clients
+    reach the app directly, so those headers are not believed and everyone behind the proxy
+    shares one login-throttle address."""
+    s = get_settings()
+    if s.trusted_proxies.strip() or not config.in_container():
+        return []  # the owner chose explicitly, or not running in Docker
+    if not s.bind_is_public:
+        return [Check("ok", "Proxy trust", "the app port is published on this machine only")]
+    return [
+        Check(
+            "warn",
+            "Proxy trust",
+            f"the app's own port is published on {s.bind}, so forwarded client addresses are not "
+            "believed: everyone behind Caddy or Tailscale shares one login-throttle address",
+            "Remove THINAIR_BIND from .env (or set it to 127.0.0.1) and run `docker compose "
+            "up -d`, so only the proxy on this machine can reach the app.",
+        )
+    ]
 
 
 REINSTALL = (

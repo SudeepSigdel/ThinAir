@@ -175,13 +175,14 @@ class RunnerClient:
                     if r.ok and r.json().get("cancel"):
                         cancelled = True
                         work.cancel()
-                except (requests.RequestException, ValueError):
-                    buffer[:0] = batch  # keep it; try again on the next tick
                 except RunnerSetupError:  # disabled while working: stop, don't orphan the job
+                    # Before the generic clause below: RunnerSetupError is a ValueError.
                     work.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await work
                     raise
+                except (requests.RequestException, ValueError):
+                    buffer[:0] = batch  # keep it; try again on the next tick
         if cancelled:
             log.info("job %s: cancelled by the server", job_id)
             with contextlib.suppress(asyncio.CancelledError, Exception):

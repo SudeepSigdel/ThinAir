@@ -7,6 +7,15 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LOOPBACK = "127.0.0.1,::1"
+PRIVATE_RANGES = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+_LOCAL_BINDS = {"", "127.0.0.1", "::1", "localhost"}
+
+
+def in_container() -> bool:
+    """Running inside a Docker container (where the proxy's hop is the Docker network)."""
+    return Path("/.dockerenv").exists()
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="THINAIR_", env_file=".env", extra="ignore")
@@ -35,10 +44,12 @@ class Settings(BaseSettings):
     # when outgoing traffic leaves through another address. Then nothing looks it up.
     public_ip: str | None = None
     # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed (comma-separated
-    # addresses or CIDRs). Behind Caddy that makes the failed-login throttle count each real
-    # client instead of Caddy's one address. The default covers loopback and private ranges
-    # (Compose networks); a client on the public internet can never spoof its address.
-    trusted_proxies: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+    # addresses or CIDRs). Blank = automatic, see `effective_trusted_proxies`.
+    trusted_proxies: str = ""
+    # Where the host publishes the app's port (Compose: THINAIR_BIND, default 127.0.0.1). Read
+    # here only to decide whom to trust as a proxy and for the doctor check; it does not change
+    # what the server listens on.
+    bind: str = ""
     # /docs, /redoc and /openapi.json: "auth" = only after logging in (the default, since the
     # server may be on the internet), "open" = for anyone, "off" = not served.
     api_docs: Literal["auth", "open", "off"] = "auth"
@@ -75,6 +86,9 @@ class Settings(BaseSettings):
     # Log lines of finished jobs are deleted after this many days (0 = keep forever). Results,
     # profile reports, status history and agent messages are kept.
     log_retention_days: int = Field(default=30, ge=0)
+
+    # Most log text stored per job; past it output is dropped (the result and status are kept).
+    max_log_bytes: int = Field(default=20 * 1024**2, ge=1024)
 
     # Agent conversations (jobs started with "keep the conversation open"): how long the agent
     # waits for your next message or an approval before it finishes the job. The sandbox (and a
@@ -119,6 +133,26 @@ class Settings(BaseSettings):
     # Optional external database, e.g. postgresql+psycopg://user:pass@host/thinair (needs the
     # `postgres` extra). Default: one SQLite file in data_dir, which suits a single small server.
     database_url: SecretStr | None = None
+
+    @property
+    def bind_is_public(self) -> bool:
+        """The app's port is published beyond this machine (THINAIR_BIND is not loopback)."""
+        return self.bind.strip().lower() not in _LOCAL_BINDS
+
+    @property
+    def effective_trusted_proxies(self) -> str:
+        """Whose forwarded headers are believed. An explicit THINAIR_TRUSTED_PROXIES wins.
+        Otherwise loopback, plus the private ranges inside a container while the app's port is
+        published on this machine alone (the Compose default). There the only way to reach the
+        port is a process on the host (Caddy, `tailscale serve`), which Docker shows as the bridge
+        gateway. Published publicly, Docker's userland proxy, IPv6 publishing and rootless Docker
+        show every client as that gateway, so a forged X-Forwarded-For would pick its own
+        throttle key: then only loopback is trusted."""
+        if self.trusted_proxies.strip():
+            return self.trusted_proxies.strip()
+        if in_container() and not self.bind_is_public:
+            return LOOPBACK + "," + PRIVATE_RANGES
+        return LOOPBACK
 
     @property
     def db_url(self) -> str:

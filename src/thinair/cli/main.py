@@ -74,7 +74,7 @@ def uvicorn_options() -> dict:
         "log_level": s.log_level,
         # Believe X-Forwarded-For/-Proto only from THINAIR_TRUSTED_PROXIES (e.g. Caddy).
         "proxy_headers": True,
-        "forwarded_allow_ips": s.trusted_proxies,
+        "forwarded_allow_ips": s.effective_trusted_proxies,
     }
 
 

@@ -153,6 +153,30 @@ def test_preferred_agent_is_validated_and_prepared_once(client, monkeypatch) -> 
     assert built == ["codex"]
 
 
+def test_a_member_choosing_an_agent_does_not_start_an_image_build(client, monkeypatch) -> None:
+    """Audit A14: any member could trigger agent-image builds, heavy on a 1 GB machine. The choice
+    is still saved for them; the image is built by their first job (under their job limit)."""
+    import time
+
+    built: list[str] = []
+
+    async def fake_prebuild(cfg):
+        built.append(cfg.id)
+
+    monkeypatch.setattr(setup_api, "_prebuild", fake_prebuild)
+    sam = member_headers("sam")
+    out = client.post("/api/setup", json={"preferred_agent": "codex"}, headers=sam).json()
+    assert out["preferred_agent"] == "codex"
+    time.sleep(0.3)
+    assert built == []
+    client.post("/api/setup", json={"preferred_agent": "codex"}, headers=H)  # the owner: builds
+    for _ in range(50):
+        if built:
+            break
+        time.sleep(0.05)
+    assert built == ["codex"]
+
+
 def test_skip_unskip_and_dismiss_persist(client) -> None:
     out = client.post("/api/setup", json={"skip": "github"}, headers=H).json()
     gh = next(x for x in out["steps"] if x["id"] == "github")

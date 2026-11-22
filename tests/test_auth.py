@@ -187,7 +187,7 @@ def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, truste
 
     monkeypatch.setenv("THINAIR_ADMIN_TOKEN", TOKEN)
     get_settings.cache_clear()
-    assert "127.0.0.1" in get_settings().trusted_proxies  # the default trusts local proxies
+    assert "127.0.0.1" in get_settings().effective_trusted_proxies  # local proxies are trusted
     server, thread, sock, base = _live_server("127.0.0.1" if trusted else "192.0.2.1")
     try:
         bad = {"Authorization": "Bearer wrong-guess"}
@@ -206,3 +206,58 @@ def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, truste
         server.should_exit = True
         thread.join(10)
         sock.close()
+
+
+# ---- audit A4: who may say "this request came from X" ---------------------------------------------
+def test_private_ranges_are_trusted_only_inside_docker_while_the_port_is_not_public(
+    monkeypatch,
+) -> None:
+    """The rule: forwarded addresses are believed from loopback; from the private ranges (the
+    Docker network, where the proxy's hop appears as the bridge gateway) only inside a container
+    and only while the app's port is published on this machine alone (THINAIR_BIND loopback, the
+    Compose default). Published publicly, Docker's userland proxy, IPv6 and rootless Docker make
+    every client look like the gateway, so a forged X-Forwarded-For would pick its own throttle
+    key. Keyed on THINAIR_DOMAIN (Caddy) in 0.3.0, which wrongly cut off Tailscale installs:
+    Tailscale reaches the same loopback-only port from the host, with no domain set."""
+    from thinair import config
+
+    for var in ("THINAIR_TRUSTED_PROXIES", "THINAIR_DOMAIN", "THINAIR_BIND"):
+        monkeypatch.delenv(var, raising=False)
+
+    def trusted(in_docker: bool) -> str:
+        monkeypatch.setattr(config, "in_container", lambda: in_docker)
+        get_settings.cache_clear()
+        return get_settings().effective_trusted_proxies
+
+    private = trusted(True)  # Compose default: port bound to 127.0.0.1, no domain (Tailscale)
+    assert "172.16.0.0/12" in private and "127.0.0.1" in private
+    assert trusted(False) == "127.0.0.1,::1"  # bare metal: only a local proxy
+
+    monkeypatch.setenv("THINAIR_DOMAIN", "203-0-113-7.sslip.io")  # Caddy: same answer
+    assert trusted(True) == private
+
+    monkeypatch.setenv("THINAIR_BIND", "127.0.0.1")
+    assert trusted(True) == private
+    for public in ("0.0.0.0", "::", "192.168.1.20", "152.67.4.135"):
+        monkeypatch.setenv("THINAIR_BIND", public)
+        assert trusted(True) == "127.0.0.1,::1", public
+
+    monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "192.0.2.1")  # an explicit choice always wins
+    assert trusted(True) == "192.0.2.1"
+    monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "  ")  # blank (as in .env.example) = unset
+    monkeypatch.setenv("THINAIR_BIND", "127.0.0.1")
+    assert trusted(True) == private
+
+
+def test_a_flood_of_wrong_tokens_from_many_addresses_still_slows_guessing(monkeypatch) -> None:
+    """Backstop for A4: even if a client can pick its own address for every request, the failures
+    add up. After 200 in a minute across all addresses, short tokens are refused unchecked (as
+    for a throttled address); long generated tokens still sign in."""
+    monkeypatch.setenv("THINAIR_ADMIN_TOKEN", TOKEN)
+    get_settings.cache_clear()
+    with TestClient(create_app({})) as c:
+        for i in range(api_auth._GLOBAL_FAIL_LIMIT):
+            api_auth.record_failure(f"198.51.100.{i}")  # every attacker address is new
+        short = {"Authorization": "Bearer " + "g" * 20}
+        assert c.get("/api/me", headers=short).status_code == 429
+        assert c.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200

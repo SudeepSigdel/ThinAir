@@ -436,9 +436,27 @@ async def pr_executor(ctx: JobContext, mgr: SandboxManager | None) -> ExecResult
             gh = GitHubClient(pr_cred.token, source=pr_cred.source)
             base = parent.ref or await asyncio.to_thread(gh.default_branch, owner, name)
             ctx.log(f"[thinair] opening a pull request: {branch} -> {base}")
+
+            fell_back: list[str] = []
+
+            def default_base() -> str:
+                # Runs in a worker thread (no logging from here). The job's ref was a tag or a
+                # commit, and GitHub only takes a branch as the base.
+                fell_back.append(base)
+                return gh.default_branch(owner, name)
+
             url = await asyncio.to_thread(
-                gh.create_pull, owner, name, title=title, body=body, head=branch, base=base
+                gh.create_pull,
+                owner,
+                name,
+                title=title,
+                body=body,
+                head=branch,
+                base=base,
+                fallback_base=default_base if parent.ref else None,
             )
+            if fell_back:
+                ctx.log(f"[thinair] {base} is not a branch; the pull request uses the default one")
         finally:
             await asyncio.shield(pr_cred.arevoke())
     except PRError as e:

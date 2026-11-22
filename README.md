@@ -435,6 +435,12 @@ profile:
 Unknown keys are errors, so typos are reported instead of ignored. Python dependencies go into
 `/workspace/.venv` and Node dependencies into `node_modules`, both inside the job's workspace.
 
+`env:` applies to install, test and agent steps, except that agents never receive endpoint, proxy,
+certificate or credential settings from a repository (names such as `*_BASE_URL`, `*_ENDPOINT`,
+`*PROXY*`, `SSL_CERT_FILE`, `NODE_OPTIONS`, `LD_*`, or starting with `OPENAI_`, `ANTHROPIC_`,
+`GEMINI_`, `GOOGLE_`, `CODEX_`, `CLAUDE_`, `COPILOT_`, `GH_`, `GITHUB_`): a repository could
+otherwise point an agent's login or API key at its own server. The job log lists what was left out.
+
 ### How the profile works
 
 The tests run once with the most resources. If they don't pass there, Thinair stops and tells you
@@ -489,8 +495,9 @@ them.
   public internet at `https://<your-ip>.sslip.io` (HTTPS with HSTS; plain HTTP only redirects).
   Signing in needs a one-time pairing code or a 256-bit token. Wrong attempts are counted per
   real client address: Thinair believes `X-Forwarded-For` only from the proxies in
-  `THINAIR_TRUSTED_PROXIES` (loopback and private ranges, i.e. Caddy), and Caddy ignores that
-  header from clients. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
+  `THINAIR_TRUSTED_PROXIES` (by default loopback, plus the Docker network where Caddy or `tailscale serve` sit, as
+  long as the app's own port is published on this machine only, which is the default), and Caddy ignores that header from clients. Failures from all
+  addresses are also counted together, so inventing a new address per request does not help. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
 - **GitHub access (optional):** the GitHub App's keys (one repository, at most an hour, revoked after
   each step) or a token reach only clone/push containers and Thinair's own GitHub API calls, never
@@ -576,7 +583,12 @@ nothing; the only thing it sends anywhere is a check of your GitHub token, to Gi
   installer again and scan the new QR code.
 - **Installs hang or time out**: some networks block or throttle PyPI or npm from containers. Set
   `THINAIR_PIP_INDEX_URL` / `THINAIR_NPM_REGISTRY` in `.env` to a mirror you can reach.
-- **"Could not detect the project type"**: add a `thinair.yaml` with `stack`, `install` and `test`.
+- **"Could not detect the project type"**: Thinair runs Python and Node.js projects and looks for
+  `package.json`, `requirements.txt`, `pyproject.toml`, `setup.py` or `setup.cfg` in the top folder and,
+  if there is none, up to two levels of subfolders (it picks one and says which; Python before Node).
+  If your project is elsewhere or needs other commands, add a `thinair.yaml` to the repository with
+  `workdir`, `stack`, `install` and `test`. Other languages (Java, Go, ...) are not supported yet: the
+  sandbox images only contain Python and Node.js.
 - **"Claude Code is not signed in"**: tap **Sign in to the agent** on the failed job (or
   Agents > Sign in), then **Run again**. From a terminal: `thinair auth claude` (see above).
 - **Codex sign-in fails right away**: turn on device code login in your ChatGPT security
