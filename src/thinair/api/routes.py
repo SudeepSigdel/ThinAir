@@ -432,12 +432,15 @@ async def _while_signed_in(frames: AsyncIterator[str], who: Principal) -> AsyncI
     """Pass SSE frames on, but end the stream once the caller's token is revoked or their user
     disabled (otherwise a signed-out phone keeps receiving a running job's output)."""
     checked = time.monotonic()
-    async for frame in frames:
-        yield frame
-        if time.monotonic() - checked >= STREAM_RECHECK_S:
-            checked = time.monotonic()
-            if not await asyncio.to_thread(still_signed_in, who):
-                return
+    try:
+        async for frame in frames:
+            yield frame
+            if time.monotonic() - checked >= STREAM_RECHECK_S:
+                checked = time.monotonic()
+                if not await asyncio.to_thread(still_signed_in, who):
+                    return
+    finally:
+        await frames.aclose()  # now, not when the garbage collector gets to it
 
 
 @router.get("/jobs/{job_id}/events", tags=["jobs"], response_class=StreamingResponse)

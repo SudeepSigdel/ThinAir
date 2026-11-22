@@ -209,31 +209,44 @@ def test_throttle_counts_real_clients_behind_a_trusted_proxy(monkeypatch, truste
 
 
 # ---- audit A4: who may say "this request came from X" ---------------------------------------------
-def test_forwarded_headers_are_trusted_from_loopback_only_unless_caddy_is_configured(
+def test_private_ranges_are_trusted_only_inside_docker_while_the_port_is_not_public(
     monkeypatch,
 ) -> None:
-    """Regression: the default trusted every private range. When the port is published directly,
-    Docker's userland proxy, IPv6 publishing and rootless Docker make every client look like the
-    bridge gateway (172.x), so a forged X-Forwarded-For became its throttle key and the
-    failed-login throttle could be dodged. Private ranges are now trusted only when Caddy is
-    configured (THINAIR_DOMAIN), where the published port is loopback-only by default."""
-    for var in ("THINAIR_TRUSTED_PROXIES", "THINAIR_DOMAIN"):
-        monkeypatch.delenv(var, raising=False)
-    get_settings.cache_clear()
-    assert get_settings().effective_trusted_proxies == "127.0.0.1,::1"
+    """The rule: forwarded addresses are believed from loopback; from the private ranges (the
+    Docker network, where the proxy's hop appears as the bridge gateway) only inside a container
+    and only while the app's port is published on this machine alone (THINAIR_BIND loopback, the
+    Compose default). Published publicly, Docker's userland proxy, IPv6 and rootless Docker make
+    every client look like the gateway, so a forged X-Forwarded-For would pick its own throttle
+    key. Keyed on THINAIR_DOMAIN (Caddy) in 0.3.0, which wrongly cut off Tailscale installs:
+    Tailscale reaches the same loopback-only port from the host, with no domain set."""
+    from thinair import config
 
-    monkeypatch.setenv("THINAIR_DOMAIN", "203-0-113-7.sslip.io")
-    get_settings.cache_clear()
-    private = get_settings().effective_trusted_proxies
+    for var in ("THINAIR_TRUSTED_PROXIES", "THINAIR_DOMAIN", "THINAIR_BIND"):
+        monkeypatch.delenv(var, raising=False)
+
+    def trusted(in_docker: bool) -> str:
+        monkeypatch.setattr(config, "in_container", lambda: in_docker)
+        get_settings.cache_clear()
+        return get_settings().effective_trusted_proxies
+
+    private = trusted(True)  # Compose default: port bound to 127.0.0.1, no domain (Tailscale)
     assert "172.16.0.0/12" in private and "127.0.0.1" in private
+    assert trusted(False) == "127.0.0.1,::1"  # bare metal: only a local proxy
+
+    monkeypatch.setenv("THINAIR_DOMAIN", "203-0-113-7.sslip.io")  # Caddy: same answer
+    assert trusted(True) == private
+
+    monkeypatch.setenv("THINAIR_BIND", "127.0.0.1")
+    assert trusted(True) == private
+    for public in ("0.0.0.0", "::", "192.168.1.20", "152.67.4.135"):
+        monkeypatch.setenv("THINAIR_BIND", public)
+        assert trusted(True) == "127.0.0.1,::1", public
 
     monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "192.0.2.1")  # an explicit choice always wins
-    get_settings.cache_clear()
-    assert get_settings().effective_trusted_proxies == "192.0.2.1"
-
+    assert trusted(True) == "192.0.2.1"
     monkeypatch.setenv("THINAIR_TRUSTED_PROXIES", "  ")  # blank (as in .env.example) = unset
-    get_settings.cache_clear()
-    assert get_settings().effective_trusted_proxies == private
+    monkeypatch.setenv("THINAIR_BIND", "127.0.0.1")
+    assert trusted(True) == private
 
 
 def test_a_flood_of_wrong_tokens_from_many_addresses_still_slows_guessing(monkeypatch) -> None:

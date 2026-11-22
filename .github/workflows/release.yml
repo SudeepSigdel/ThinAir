@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run pytest -m "not docker"
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       # The exact dependency versions CI tested (uv.lock), so the image is not whatever pip finds
       # newest on the day of the build. The Dockerfile uses this file when it is there.
       - run: uv export --frozen --no-hashes --no-dev --extra postgres --no-emit-project > constraints.txt

@@ -73,11 +73,16 @@ async def test_network_disabled_by_default(mgr) -> None:
 
 
 async def test_oom_is_detected(mgr) -> None:
-    res, _ = await run(
-        mgr,
-        sb(["python", "-c", "x = b'a' * (400 * 2**20); print(len(x))"], memory_bytes=64 * 1024**2),
+    """Memory grows over about a second, like a real test run does. Allocating 400 MB at once
+    killed the container within 0.1 s, before Docker's OOM-event monitoring had attached, and on
+    CI runners `OOMKilled` then stayed false (exit code 137 only): a race of this test, not of
+    the product (real jobs run for seconds, and the profiler also reads exit 137 as OOM)."""
+    grow = (
+        "import time; l = []; [(l.append(b'a' * 10 * 2**20), time.sleep(0.1)) for _ in range(40)]"
     )
+    res, _ = await run(mgr, sb(["python", "-c", grow], memory_bytes=64 * 1024**2))
     assert res.oom_killed and res.exit_code == 137
+    assert res.wall_s > 0.3  # it really lived long enough for the monitor to see it
 
 
 async def test_timeout_kills(mgr) -> None:
