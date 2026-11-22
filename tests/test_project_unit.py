@@ -240,3 +240,54 @@ def test_the_error_says_what_was_looked_at() -> None:
         resolve_project({"README.md", "pom.xml", "src"}, ProjectConfig())
     text = str(e.value)
     assert "pom.xml" in text and "Python and Node.js" in text and "workdir" in text
+
+
+# ---- Node projects: npm, pnpm and yarn ----------------------------------------------------------
+def _node(*files: str):
+    from thinair.project.config import ProjectConfig
+    from thinair.project.detect import resolve_project
+
+    return resolve_project({"package.json", *files}, ProjectConfig())
+
+
+def test_node_projects_use_the_package_manager_their_lockfile_names() -> None:
+    assert _node().install == "npm install" and _node().test == "npm test"
+    assert _node("package-lock.json").install == "npm ci"
+
+    pnpm = _node("pnpm-lock.yaml")
+    # corepack runs pnpm without `corepack enable` (the root filesystem is read-only); the frozen
+    # install fails on a stale lockfile instead of silently rewriting it, like `npm ci`.
+    assert pnpm.install == "corepack pnpm install --frozen-lockfile"
+    assert pnpm.test == "corepack pnpm test"
+    # The test step has no network and a throwaway /tmp: pnpm's download must sit on the shared
+    # workspace volume, or the tests could not start it.
+    assert pnpm.env["COREPACK_HOME"] == "/workspace/.corepack"
+    assert pnpm.env["COREPACK_ENABLE_DOWNLOAD_PROMPT"] == "0"
+
+    yarn = _node("yarn.lock")
+    assert yarn.install == "yarn install --frozen-lockfile" and yarn.test == "yarn test"
+    assert "COREPACK_HOME" not in yarn.env and "COREPACK_HOME" not in _node().env
+
+
+def test_several_lockfiles_pick_pnpm_then_yarn_then_npm() -> None:
+    assert _node("pnpm-lock.yaml", "yarn.lock", "package-lock.json").install.startswith(
+        "corepack pnpm"
+    )
+    assert _node("yarn.lock", "package-lock.json").install.startswith("yarn ")
+
+
+def test_thinair_yaml_still_overrides_the_detected_commands() -> None:
+    from thinair.project.config import ProjectConfig
+    from thinair.project.detect import resolve_project
+
+    cfg = ProjectConfig(install="make deps", test="make check")
+    r = resolve_project({"package.json", "pnpm-lock.yaml"}, cfg)
+    assert r.install == "make deps" and r.test == "make check"
+
+
+def test_python_projects_are_unaffected() -> None:
+    from thinair.project.config import ProjectConfig
+    from thinair.project.detect import resolve_project
+
+    r = resolve_project({"requirements.txt", "pnpm-lock.yaml"}, ProjectConfig())
+    assert r.stack == "python" and "COREPACK_HOME" not in r.env
