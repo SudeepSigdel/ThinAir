@@ -154,7 +154,10 @@ pre.tail { max-height: 30vh; }
 /* ---- agent jobs ---- */
 .tabs { display: flex; gap: 6px; background: var(--line); padding: 4px; border-radius: 12px; }
 .tab { flex: 1; margin: 0; min-height: 40px; background: transparent; color: var(--fg); }
-.tab[aria-selected="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / 15%); }
+.tab[aria-selected="true"], .tab[aria-pressed="true"] {
+  background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / 15%);
+}
+#activity-filters { margin: 0.4rem 0 1rem; }
 select, textarea {
   width: 100%; font: inherit; padding: 12px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--fg);
