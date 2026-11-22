@@ -41,6 +41,9 @@ services:
       # THINAIR_BIND in .env only choose the published host port/address (see `ports`).
       THINAIR_HOST: 0.0.0.0
       THINAIR_PORT: "8080"
+      # The app reads where its port is published (same value as `ports` below) to decide whom
+      # to trust as a proxy; it does not change what it listens on.
+      THINAIR_BIND: ${THINAIR_BIND:-127.0.0.1}
     volumes:
       - thinair-data:/data
     ports:
