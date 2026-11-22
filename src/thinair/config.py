@@ -9,6 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOOPBACK = "127.0.0.1,::1"
 PRIVATE_RANGES = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+_LOCAL_BINDS = {"", "127.0.0.1", "::1", "localhost"}
+
+
+def in_container() -> bool:
+    """Running inside a Docker container (where the proxy's hop is the Docker network)."""
+    return Path("/.dockerenv").exists()
 
 
 class Settings(BaseSettings):
@@ -40,6 +46,10 @@ class Settings(BaseSettings):
     # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed (comma-separated
     # addresses or CIDRs). Blank = automatic, see `effective_trusted_proxies`.
     trusted_proxies: str = ""
+    # Where the host publishes the app's port (Compose: THINAIR_BIND, default 127.0.0.1). Read
+    # here only to decide whom to trust as a proxy and for the doctor check; it does not change
+    # what the server listens on.
+    bind: str = ""
     # /docs, /redoc and /openapi.json: "auth" = only after logging in (the default, since the
     # server may be on the internet), "open" = for anyone, "off" = not served.
     api_docs: Literal["auth", "open", "off"] = "auth"
@@ -125,15 +135,22 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
 
     @property
+    def bind_is_public(self) -> bool:
+        """The app's port is published beyond this machine (THINAIR_BIND is not loopback)."""
+        return self.bind.strip().lower() not in _LOCAL_BINDS
+
+    @property
     def effective_trusted_proxies(self) -> str:
         """Whose forwarded headers are believed. An explicit THINAIR_TRUSTED_PROXIES wins.
-        Otherwise: loopback only, plus the private ranges (Compose networks, where Caddy sits)
-        when Caddy is configured (THINAIR_DOMAIN). Never the private ranges by default: with the
-        port published directly, Docker's userland proxy, IPv6 publishing and rootless Docker show
-        every client as the bridge gateway, and its X-Forwarded-For would be believed."""
+        Otherwise loopback, plus the private ranges inside a container while the app's port is
+        published on this machine alone (the Compose default). There the only way to reach the
+        port is a process on the host (Caddy, `tailscale serve`), which Docker shows as the bridge
+        gateway. Published publicly, Docker's userland proxy, IPv6 publishing and rootless Docker
+        show every client as that gateway, so a forged X-Forwarded-For would pick its own
+        throttle key: then only loopback is trusted."""
         if self.trusted_proxies.strip():
             return self.trusted_proxies.strip()
-        if self.domain:
+        if in_container() and not self.bind_is_public:
             return LOOPBACK + "," + PRIVATE_RANGES
         return LOOPBACK
 

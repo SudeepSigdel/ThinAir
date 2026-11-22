@@ -214,12 +214,16 @@ def test_github_app_check_makes_no_network_call(monkeypatch) -> None:
     assert doctor._github_app().status == "ok"
 
 
-def test_caddy_plus_a_publicly_published_app_port_is_flagged(monkeypatch) -> None:
-    """Audit A4: with Caddy configured, forwarded addresses are believed from private ranges.
-    That is only safe while the app's own port is not reachable from outside."""
+def test_a_publicly_published_app_port_is_flagged(monkeypatch) -> None:
+    """Forwarded addresses are believed from the Docker network only while the app's own port is
+    published on this machine alone; otherwise clients behind Caddy or Tailscale all share one
+    login-throttle address, and the check says how to fix it."""
+    from thinair import config
+
+    monkeypatch.setattr(config, "in_container", lambda: True)
     monkeypatch.setenv("THINAIR_ADMIN_TOKEN", "a" * 40)
     monkeypatch.setenv("THINAIR_PUBLIC_URL", "https://thinair.example.com")
-    monkeypatch.setenv("THINAIR_DOMAIN", "thinair.example.com")
+    monkeypatch.delenv("THINAIR_TRUSTED_PROXIES", raising=False)
     monkeypatch.delenv("THINAIR_BIND", raising=False)
     get_settings.cache_clear()
     upgrade(get_engine())
@@ -227,6 +231,7 @@ def test_caddy_plus_a_publicly_published_app_port_is_flagged(monkeypatch) -> Non
     assert c["Proxy trust"].status == "ok"  # published on 127.0.0.1 only (the default)
 
     monkeypatch.setenv("THINAIR_BIND", "0.0.0.0")
+    get_settings.cache_clear()
     c = by_name(run_checks(FakeDocker(), online=False))
     assert c["Proxy trust"].status == "warn"
-    assert "THINAIR_BIND" in c["Proxy trust"].fix and "forge" in c["Proxy trust"].detail
+    assert "THINAIR_BIND" in c["Proxy trust"].fix and "shares one" in c["Proxy trust"].detail

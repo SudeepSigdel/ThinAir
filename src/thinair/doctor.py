@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from thinair import config
 from thinair.config import get_settings
 
 Status = Literal["ok", "warn", "fail"]
@@ -338,25 +339,23 @@ def _phone() -> Check:
 
 
 def _proxy_trust() -> list[Check]:
-    """With Caddy configured, forwarded addresses are believed from private ranges. That holds only
-    while the app's own port is published on loopback (the default): otherwise a client can reach
-    the app directly and forge the address the failed-login throttle counts."""
-    import os
-
+    """Forwarded addresses (from Caddy or `tailscale serve`) are believed from the Docker network
+    only while the app's own port is published on this machine alone. Published publicly, clients
+    reach the app directly, so those headers are not believed and everyone behind the proxy
+    shares one login-throttle address."""
     s = get_settings()
-    if not s.domain or s.trusted_proxies.strip():
-        return []  # no Caddy (only loopback is trusted), or the owner chose explicitly
-    bind = (os.environ.get("THINAIR_BIND") or "127.0.0.1").strip()
-    if bind in ("127.0.0.1", "::1", "localhost"):
+    if s.trusted_proxies.strip() or not config.in_container():
+        return []  # the owner chose explicitly, or not running in Docker
+    if not s.bind_is_public:
         return [Check("ok", "Proxy trust", "the app port is published on this machine only")]
     return [
         Check(
             "warn",
             "Proxy trust",
-            f"Caddy is on, but the app's own port is also published on {bind}: clients can reach "
-            "it directly and forge the address the login throttle counts",
-            "Remove THINAIR_BIND from .env (or set it to 127.0.0.1) and run "
-            "`docker compose up -d`, so only Caddy is reachable from outside.",
+            f"the app's own port is published on {s.bind}, so forwarded client addresses are not "
+            "believed: everyone behind Caddy or Tailscale shares one login-throttle address",
+            "Remove THINAIR_BIND from .env (or set it to 127.0.0.1) and run `docker compose "
+            "up -d`, so only the proxy on this machine can reach the app.",
         )
     ]
 

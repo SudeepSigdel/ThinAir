@@ -495,8 +495,8 @@ them.
   public internet at `https://<your-ip>.sslip.io` (HTTPS with HSTS; plain HTTP only redirects).
   Signing in needs a one-time pairing code or a 256-bit token. Wrong attempts are counted per
   real client address: Thinair believes `X-Forwarded-For` only from the proxies in
-  `THINAIR_TRUSTED_PROXIES` (by default loopback only, plus the private ranges, i.e. Caddy, once
-  `THINAIR_DOMAIN` is set), and Caddy ignores that header from clients. Failures from all
+  `THINAIR_TRUSTED_PROXIES` (by default loopback, plus the Docker network where Caddy or `tailscale serve` sit, as
+  long as the app's own port is published on this machine only, which is the default), and Caddy ignores that header from clients. Failures from all
   addresses are also counted together, so inventing a new address per request does not help. The API docs need a login. Prefer it private? `THINAIR_PHONE=tailscale`.
 - **Containers are cleaned up** after every step, on cancel, and on the next start after a crash.
 - **GitHub access (optional):** the GitHub App's keys (one repository, at most an hour, revoked after
