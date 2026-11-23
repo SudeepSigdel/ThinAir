@@ -338,6 +338,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("jump-next").addEventListener("click", () => jumpChange(1));
   $("diff-wrap").addEventListener("click", () => setDiffWrap(!diffState.wrap));
   $("diff-all").addEventListener("click", toggleAllFiles);
+  $("diff-copy").addEventListener("click", copyDiff);
   $("add-phone").addEventListener("click", addPhone);
   $("person-form").addEventListener("submit", addPerson);
   $("new-msgs").addEventListener("click", () => {
