@@ -12,6 +12,7 @@ env:
   CLAUDE_CONFIG_DIR: /thinair-auth
   DISABLE_AUTOUPDATER: "1"
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  ENABLE_CLAUDEAI_MCP_SERVERS: "false"      # see claude.yaml: no claude.ai connectors in a sandbox
 auth:
   config_dir: /thinair-auth
   shares_login_with: claude

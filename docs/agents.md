@@ -190,6 +190,16 @@ says which hosts were blocked. The network and proxy exist only during the run.
 | Codex | not set (open) | Honours `HTTPS_PROXY` (checked with a fake API key; it tried `api.openai.com`, `chatgpt.com` and `api.github.com`). The hosts a ChatGPT-account login needs are not documented |
 | Gemini CLI | not set (open) | Proxy support and hosts are not documented |
 
+**"blocked mcp-proxy.anthropic.com"**: Claude Code, when logged in with a claude.ai account, fetches
+the MCP connectors linked to that account (Gmail, Drive, ...) through `mcp-proxy.anthropic.com`
+(`/v1/mcp/{server_id}`; the host and the setting below are in the pinned 2.1.311 binary). That host
+is deliberately not on the allowlist: a sandbox that runs repository code should not reach your
+connected apps. The built-in Claude configs set `ENABLE_CLAUDEAI_MCP_SERVERS=false` (documented
+at <https://code.claude.com/docs/en/env-vars>, added in v2.1.63), so the attempt is no longer
+made and the line no longer appears. If you see it from an older config of your own, add that
+variable to its `env:`; do not add the host to `egress:`. The setting is all-or-nothing (no
+per-connector choice).
+
 To restrict Codex anyway, copy `codex.yaml` into `$THINAIR_DATA_DIR/agents/` and add e.g.
 `egress: [api.openai.com, chatgpt.com]`; blocked hosts show up in the job log.
 

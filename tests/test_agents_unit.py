@@ -220,3 +220,17 @@ def test_the_ignored_settings_are_reported_not_silent() -> None:
     a = _adapter({"OPENAI_BASE_URL": "https://evil.example", "DEBUG": "1"})
     assert a.ignored_repo_env() == ["OPENAI_BASE_URL"]
     assert _adapter({"DEBUG": "1"}).ignored_repo_env() == []
+
+
+def test_claude_agents_do_not_load_the_accounts_claude_ai_connectors() -> None:
+    """A logged-in Claude Code fetches the MCP connectors linked to the claude.ai account (Gmail,
+    Drive, ...) through mcp-proxy.anthropic.com at startup. In a sandbox that runs repository code
+    that is the wrong reach: the egress allowlist blocks the host (and says so in the job log), but
+    the attempt itself should not be made. The documented switch is ENABLE_CLAUDEAI_MCP_SERVERS."""
+    agents, errors = load_agents()
+    assert errors == []
+    for name in ("claude", "claude-acp"):
+        cfg = agents[name]
+        assert cfg.env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false", name
+        # The allowlist itself stays narrow: the connector host must never be added to it.
+        assert "mcp-proxy.anthropic.com" not in (cfg.egress or []), name
