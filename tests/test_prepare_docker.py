@@ -95,6 +95,28 @@ async def test_a_project_in_a_subfolder_is_found_without_a_workdir(mgr, cleanup,
     assert ok.exit_code == 0, "\n".join(out[-10:])
 
 
+LOCKFILE = (
+    "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n"
+    "  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n"
+)
+
+
+async def test_a_pnpm_project_installs_online_and_tests_offline(mgr, cleanup, tmp_path) -> None:
+    """pnpm comes through corepack (no `corepack enable` on a read-only root). Its download is
+    made by the install step, which has network; the test step has none, so the download must sit
+    on the workspace volume. This runs both steps for real."""
+    (tmp_path / "package.json").write_text(
+        '{"name": "p", "version": "1.0.0", "scripts": {"test": "node -e 0"}}'
+    )
+    (tmp_path / "pnpm-lock.yaml").write_text(LOCKFILE)
+    logs: list[str] = []
+    prepared = await prepare_workspace(mgr, DirSource(tmp_path), "t5pnpm", logs.append)
+    cleanup.append(prepared.volume)
+    assert prepared.resolved.install == "corepack pnpm install --frozen-lockfile"
+    ok, out = await run_tests(mgr, prepared, 512 * 1024**2)  # network off, noexec /tmp
+    assert ok.exit_code == 0, "\n".join(out[-10:])
+
+
 async def test_failing_install_gives_actionable_error_and_cleans_up(mgr, cleanup, tmp_path) -> None:
     (tmp_path / "thinair.yaml").write_text("stack: python\ninstall: exit 7\n")
     with pytest.raises(PrepareError) as e:

@@ -51,24 +51,58 @@ function syncOffline() {
 }
 
 // ---- Activity ---------------------------------------------------------------------------------
+// What each filter asks the server for (`status` repeats) and says when there is nothing to show.
+const ACTIVITY_FILTERS = {
+  all: { query: "", empty: "No jobs yet. Start one from a project." },
+  running: { query: "&status=queued&status=running", empty: "Nothing is running." },
+  failed: { query: "&status=failed&status=timeout", empty: "No failed jobs." },
+};
+let activityFilter = "all";
+let activityFiltersBound = false;
+
+function bindActivityFilters() {
+  if (activityFiltersBound) return;
+  activityFiltersBound = true;
+  for (const btn of $("activity-filters").querySelectorAll("button[data-filter]")) {
+    btn.addEventListener("click", async () => {
+      if (activityFilter === btn.dataset.filter) return;
+      activityFilter = btn.dataset.filter;
+      markActivityFilter();
+      skeletonRows("activity-jobs");
+      await loadActivity();
+    });
+  }
+}
+
+function markActivityFilter() {
+  for (const btn of $("activity-filters").querySelectorAll("button[data-filter]")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.filter === activityFilter));
+  }
+}
+
 async function showActivity() {
   hideAll();
   show("view-activity");
   showError("activity-error", "");
   show("activity-empty", false);
+  bindActivityFilters();
+  markActivityFilter();
   skeletonRows("activity-jobs");
   await loadActivity();
 }
 
 async function loadActivity() {
   let jobs;
+  const filter = ACTIVITY_FILTERS[activityFilter];
   try {
-    jobs = await api("/api/jobs?limit=50");
+    jobs = await api(`/api/jobs?limit=50${filter.query}`);
   } catch (e) {
     if (!(e instanceof AuthError)) showError("activity-error", e.message);
     $("activity-jobs").replaceChildren();
     return;
   }
+  if (ACTIVITY_FILTERS[activityFilter] !== filter) return; // they tapped another filter meanwhile
+  $("activity-empty").textContent = filter.empty;
   renderJobList("activity-jobs", "activity-empty", jobs, true);
   refreshWhileBusy(jobs, "view-activity", loadActivity);
 }

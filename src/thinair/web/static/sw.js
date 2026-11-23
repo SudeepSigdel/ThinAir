@@ -6,6 +6,7 @@ const CACHE = "thinair-shell-v4";
 const SHELL = [
   "/",
   "/static/app.js",
+  "/static/format.js",
   "/static/diff.js",
   "/static/views-jobs.js",
   "/static/views-account.js",

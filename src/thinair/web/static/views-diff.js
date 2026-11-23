@@ -4,7 +4,7 @@
 
 const LARGE_CHANGE_LINES = 400;
 const CHUNK_LINES = 300; // lines added to the page per animation frame, so a huge file never freezes it
-const diffState = { files: [], targets: [], cursor: -1, jobId: null, wrap: true };
+const diffState = { files: [], targets: [], cursor: -1, jobId: null, wrap: true, text: "" };
 
 function statusLabel(f) {
   if (f.status === "added") return "new file";
@@ -88,6 +88,7 @@ async function showChanges(id) {
   const stat = r.diff_stat || {};
   const files = typeof parseDiff === "function" ? parseDiff(r.diff || "") : [];
   diffState.files = files;
+  diffState.text = r.diff || "";
   diffState.targets = changeTargets(files);
   diffState.cursor = -1;
   const adds = stat.insertions ?? files.reduce((n, f) => n + f.additions, 0);
@@ -149,6 +150,22 @@ function toggleAllFiles() {
   const open = !all.every((d) => d.open);
   for (const d of all) d.open = open;
   $("diff-all").textContent = open ? "Collapse all" : "Expand all";
+}
+
+// Copy the whole diff as text. The clipboard needs a secure context (https, or localhost), which
+// the app is served on; if the browser still refuses, say so instead of failing silently.
+let copyTimer = 0;
+async function copyDiff() {
+  const btn = $("diff-copy");
+  let label = "Copied";
+  try {
+    await navigator.clipboard.writeText(diffState.text);
+  } catch {
+    label = "Couldn't copy";
+  }
+  btn.textContent = label;
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => (btn.textContent = "Copy diff"), 1800);
 }
 
 // The primary action of the screen sits in a sticky bar at the bottom.

@@ -18,6 +18,7 @@ from thinair.profiler.runner import profile_source
 from thinair.project.prepare import DirSource, GitSource, PrepareError
 from thinair.sandbox.manager import SandboxManager
 from thinair.sandbox.spec import SandboxError
+from thinair.timeago import relative_time
 from thinair.users import (
     OWNER_NAME,
     UserError,
@@ -116,7 +117,8 @@ def token_list() -> None:
         for t in list_tokens(session):
             state = "revoked" if t.revoked_at else "active"
             owner = names.get(t.user_id, "?") if t.user_id else OWNER_NAME
-            typer.echo(f"{t.id}  {t.name:<16} {owner:<16} {state}")
+            used = f"last used {relative_time(t.last_used_at)}"
+            typer.echo(f"{t.id}  {t.name:<16} {owner:<16} {state:<8} {used}")
 
 
 @user_app.command("add")

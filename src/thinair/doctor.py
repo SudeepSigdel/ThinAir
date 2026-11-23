@@ -405,6 +405,18 @@ def _https(online: bool) -> list[Check]:
     res = https_ready(host, via=via)
     if res.ok:
         return [Check("ok", "HTTPS", res.reason)]
+    if res.unreachable and via is None and host.endswith(".ts.net"):
+        # `tailscale serve` / Funnel: the machine's own Funnel address cannot be reached from
+        # inside its Docker container (a hairpin), so this fails on every working install. That is
+        # not evidence of a problem; certificate errors and wrong answers still warn.
+        return [
+            Check(
+                "ok",
+                "HTTPS",
+                f"{host} is a Tailscale address: it can't be checked from inside Docker. If the "
+                "app opens on your phone, it works",
+            )
+        ]
     fix = " ".join(line.strip() for line in firewall_hint(local_cloud())) if s.domain else ""
     if s.domain:
         fix += (

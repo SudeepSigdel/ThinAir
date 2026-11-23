@@ -247,6 +247,11 @@ function renderJob(job) {
   if (job.ref) bits.push(`ref ${job.ref}`);
   if (job.commit_sha) bits.push(job.commit_sha.slice(0, 10));
   bits.push(`started ${ago(job.started_at || job.created_at)}`);
+  if (job.finished && job.started_at && job.finished_at) {
+    // How long it ran (a job cancelled while still queued has no start time, so no duration).
+    const took = fmtDuration((new Date(job.finished_at) - new Date(job.started_at)) / 1000);
+    if (took) bits.push(`took ${took}`);
+  }
   $("job-meta").replaceChildren(bits.join(" · "));
   if (pr && job.parent_job_id) {
     $("job-meta").append(" · ", el("a", { href: `#/job/${job.parent_job_id}`, text: "agent task" }));

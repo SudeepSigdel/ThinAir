@@ -17,13 +17,23 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlmodel import Session, case, func, select
+from sqlmodel import Session, case, delete, func, select
 
 from thinair import setup_state
 from thinair.agents.config import load_agents
 from thinair.api.auth import require_admin, require_auth, still_signed_in
 from thinair.auth import create_token
-from thinair.db.models import Job, JobKind, JobResult, JobStatus, ProfileReport, Repo, User
+from thinair.db.models import (
+    Job,
+    JobEvent,
+    JobKind,
+    JobResult,
+    JobStatus,
+    ProfileReport,
+    ProfileRun,
+    Repo,
+    User,
+)
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES
 from thinair.jobs.executors import agents_dir
@@ -319,7 +329,9 @@ def create_job(
 def list_jobs(
     limit: int = Query(30, ge=1, le=100),
     before: str | None = Query(None, description="Return jobs older than this job id"),
-    status_: JobStatus | None = Query(None, alias="status"),
+    status_: list[JobStatus] | None = Query(
+        None, alias="status", description="Repeat to match any of several statuses"
+    ),
     repo_id: str | None = None,
     who: Principal = Depends(require_auth),
 ) -> list[JobOut]:
@@ -331,7 +343,7 @@ def list_jobs(
         if before:
             q = q.where(Job.id < before)
         if status_:
-            q = q.where(Job.status == status_)
+            q = q.where(Job.status.in_(status_))  # type: ignore[attr-defined]
         if repo_id:
             q = q.where(Job.repo_id == repo_id)
         rows = s.exec(q.order_by(Job.id.desc()).limit(limit))  # type: ignore[attr-defined]
@@ -342,6 +354,29 @@ def list_jobs(
 def get_job(job_id: str, who: Principal = Depends(require_auth)) -> JobOut:
     with session_scope() as s:
         return JobOut.of(*_job_and_repo(s, job_id, who))
+
+
+@router.delete("/jobs/{job_id}", status_code=204, tags=["jobs"])
+def delete_job(job_id: str, who: Principal = Depends(require_auth)) -> Response:
+    """Delete a finished job with its log, runs, report and result (the project stays). Running
+    jobs are refused; so is a job whose pull-request job is still running. An agent job's own
+    pull-request jobs are deleted with it. Same visibility as everywhere: members delete their own
+    jobs, admins any."""
+    with session_scope() as s:
+        job, _ = _job_and_repo(s, job_id, who)
+        children = list(s.exec(select(Job).where(Job.parent_job_id == job_id)))
+        doomed = [job, *children]
+        if any(j.status not in TERMINAL_STATUSES for j in doomed):
+            raise _err(409, "still_running", "Wait for it to finish, or cancel it, first.")
+        ids = [j.id for j in doomed]
+        for model in (JobEvent, ProfileRun, ProfileReport, JobResult):
+            s.exec(delete(model).where(model.job_id.in_(ids)))  # type: ignore[attr-defined,call-overload]
+        for child in children:  # pull-request jobs point at their parent: first
+            s.delete(child)
+        s.flush()
+        s.delete(job)
+        s.commit()
+    return Response(status_code=204)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut, tags=["jobs"])
