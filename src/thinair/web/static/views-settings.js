@@ -27,7 +27,10 @@ function buildTabbar() {
 function updateTabbar(loggedIn = true) {
   const key = (location.hash.split("?")[0] || "").replace(/\/$/, "") || "#/";
   const active = TAB_ROUTES[key === "#" ? "#/" : key];
-  const visible = loggedIn && Boolean(active);
+  // Phones: only on the three top-level screens (job and project pages have their own back link
+  // and action bar). Wide screens: always, because the nav sits in the header and costs no room.
+  const wide = window.matchMedia && window.matchMedia("(min-width: 768px)").matches;
+  const visible = loggedIn && (Boolean(active) || wide);
   show("tabbar", visible);
   document.body.classList.toggle("has-tabbar", visible);
   for (const [id, name] of [["tab-projects", "projects"], ["tab-activity", "activity"], ["tab-settings", "settings"]]) {

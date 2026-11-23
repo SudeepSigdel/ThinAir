@@ -37,7 +37,7 @@ from thinair.db.models import (
 from thinair.db.session import session_scope
 from thinair.jobs.events import TERMINAL_STATUSES
 from thinair.jobs.executors import agents_dir
-from thinair.jobs.pr import PRError
+from thinair.jobs.pr import PRError, clean_body, clean_title, pr_body, pr_title
 from thinair.jobs.service import JobService
 from thinair.project.prepare import GitSource, PrepareError, find_repo
 from thinair.users import (
@@ -401,7 +401,7 @@ def retry_job(
     if job.status not in TERMINAL_STATUSES:
         raise _err(status.HTTP_409_CONFLICT, "still_running", "Wait for the job to finish first.")
     if job.kind == JobKind.PR:
-        return _submit_pr(svc, who, job.parent_job_id or "")
+        return _submit_pr(svc, who, job.parent_job_id or "", title=job.pr_title, body=job.pr_body)
     return _submit(
         svc,
         who,
@@ -580,11 +580,18 @@ def _latest_pr_job(agent_job_id: str) -> dict[str, Any] | None:
     }
 
 
-def _submit_pr(svc: JobService, who: Principal, agent_job_id: str) -> JobOut:
+def _submit_pr(
+    svc: JobService,
+    who: Principal,
+    agent_job_id: str,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+) -> JobOut:
     with session_scope() as s:
         _job_and_repo(s, agent_job_id, who)
     try:
-        job = svc.submit_pr(agent_job_id)
+        job = svc.submit_pr(agent_job_id, title=title, body=body)
     except PRError as e:
         code = {
             "job_not_found": status.HTTP_404_NOT_FOUND,
@@ -598,14 +605,36 @@ def _submit_pr(svc: JobService, who: Principal, agent_job_id: str) -> JobOut:
         return JobOut.of(*_job_and_repo(s, job.id, who))
 
 
+class PRIn(BaseModel):
+    title: str | None = Field(None, max_length=2_000)  # blank/absent = generated from the change
+    body: str | None = Field(None, max_length=100_000)  # absent = generated; "" = empty
+
+
+@router.get("/jobs/{job_id}/pr/draft", tags=["agents"])
+def pr_draft(job_id: str, who: Principal = Depends(require_auth)) -> dict[str, str]:
+    """The title and description Thinair would use, so the phone can show them for editing."""
+    with session_scope() as s:
+        _job_and_repo(s, job_id, who)
+        r = s.get(JobResult, job_id)
+        patch, summary = (r.patch, r.summary) if r is not None else (None, None)
+    if not patch:
+        raise _err(status.HTTP_404_NOT_FOUND, "no_patch", "This job has no change to open.")
+    return {"title": pr_title(patch), "body": pr_body(patch, summary, job_id)}
+
+
 @router.post("/jobs/{job_id}/pr", response_model=JobOut, status_code=201, tags=["agents"])
 def create_pr(
-    job_id: str, svc: JobService = Depends(jobs_service), who: Principal = Depends(require_auth)
+    job_id: str,
+    data: PRIn | None = None,
+    svc: JobService = Depends(jobs_service),
+    who: Principal = Depends(require_auth),
 ) -> JobOut:
     """Open a pull request from a successful agent job's change. Queues a `pr` job; its result
     (and this job's `/result`) then carries `pr_url`. Needs THINAIR_GITHUB_TOKEN with
-    Contents and Pull requests: Read and write."""
-    return _submit_pr(svc, who, job_id)
+    Contents and Pull requests: Read and write. The optional JSON body sets the title and
+    description; leave them out (or blank) for text generated from the change."""
+    data = data or PRIn()
+    return _submit_pr(svc, who, job_id, title=clean_title(data.title), body=clean_body(data.body))
 
 
 @router.get("/jobs/{job_id}/patch", tags=["agents"])

@@ -515,6 +515,61 @@ function prLink(url) {
   return el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "View pull request ↗" });
 }
 
+// Thinair writes the title and description from the change itself; the person can edit them here
+// before anything is pushed. Resolves when the dialog closes (cancelled, or the PR job started).
+async function openPrEditor(id) {
+  const draft = await api(`/api/jobs/${id}/pr/draft`); // AuthError / API errors go to the caller
+  const title = el("input", { id: "pr-title", type: "text", maxlength: "256", autocomplete: "off" });
+  title.value = draft.title;
+  const body = el("textarea", { id: "pr-body", rows: "12", spellcheck: "true" });
+  body.value = draft.body;
+  const err = el("p", { class: "error", hidden: "", role: "alert" });
+  const send = el("button", { type: "button", text: "Open pull request" });
+  const cancel = el("button", { type: "button", class: "secondary", text: "Cancel" });
+  const dialog = el(
+    "dialog",
+    { class: "pr-editor", "aria-labelledby": "pr-editor-h" },
+    el("h2", { id: "pr-editor-h", text: "Pull request" }),
+    el("p", { class: "muted", text: "Written from the change. Edit it before it is opened." }),
+    el("label", { for: "pr-title", text: "Title" }),
+    title,
+    el("label", { for: "pr-body", text: "Description" }),
+    body,
+    err,
+    el("div", { class: "actions" }, send, cancel),
+  );
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      resolve();
+    });
+    cancel.addEventListener("click", () => dialog.close());
+    send.addEventListener("click", async () => {
+      send.disabled = true;
+      err.hidden = true;
+      try {
+        const job = await api(`/api/jobs/${id}/pr`, {
+          method: "POST",
+          body: JSON.stringify({ title: title.value, body: body.value }),
+        });
+        dialog.close();
+        location.hash = `#/job/${job.id}`;
+      } catch (e) {
+        send.disabled = false;
+        if (!(e instanceof AuthError)) {
+          err.textContent = e.message;
+          err.hidden = false;
+        } else {
+          dialog.close();
+        }
+      }
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    title.focus();
+  });
+}
+
 function prSection(id, r) {
   const box = el("div", { class: "pr" }, el("h2", { text: "Pull request" }));
   const link = prLink(r.pr_url);
@@ -536,15 +591,14 @@ function prSection(id, r) {
     button.disabled = true;
     err.hidden = true;
     try {
-      const job = await api(`/api/jobs/${id}/pr`, { method: "POST" });
-      location.hash = `#/job/${job.id}`;
+      await openPrEditor(id);
     } catch (e) {
       if (!(e instanceof AuthError)) {
         err.textContent = e.message;
         err.hidden = false;
       }
-      button.disabled = false;
     }
+    button.disabled = false;
   });
   box.append(
     el("p", { class: "muted", text: "Pushes the change to a new branch and opens a pull request." }),
