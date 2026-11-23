@@ -92,8 +92,29 @@ def _python_install(names: set[str]) -> str:
     return f"python -m venv /workspace/.venv && {deps} && pip install pytest"
 
 
+def _node_manager(names: set[str]) -> str:
+    """The package manager the lockfile names: pnpm, then yarn (classic), else npm."""
+    if "pnpm-lock.yaml" in names:
+        return "pnpm"
+    if "yarn.lock" in names:
+        return "yarn"
+    return "npm"
+
+
 def _node_install(names: set[str]) -> str:
+    manager = _node_manager(names)
+    if manager == "pnpm":
+        # corepack is in the Node image and runs pnpm without `corepack enable`, which would need
+        # to write into /usr/local/bin (read-only in the sandbox). Frozen: fail on a stale
+        # lockfile instead of rewriting it, like `npm ci`.
+        return "corepack pnpm install --frozen-lockfile"
+    if manager == "yarn":
+        return "yarn install --frozen-lockfile"  # yarn 1.x is in the image
     return "npm ci" if "package-lock.json" in names else "npm install"
+
+
+def _node_test(names: set[str]) -> str:
+    return {"pnpm": "corepack pnpm test", "yarn": "yarn test"}.get(_node_manager(names), "npm test")
 
 
 def resolve_project(names: set[str], config: ProjectConfig) -> ResolvedProject:
@@ -113,8 +134,13 @@ def resolve_project(names: set[str], config: ProjectConfig) -> ResolvedProject:
         env = dict(_PY_ENV)
     else:
         install = config.install or _node_install(names)
-        test = config.test or "npm test"
+        test = config.test or _node_test(names)
         env = {"PATH": "/workspace/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"}
+        if _node_manager(names) == "pnpm":
+            # The install step (network, a throwaway /tmp) downloads pnpm; the test step (no
+            # network) must find it again: keep corepack's download on the shared workspace volume.
+            env["COREPACK_HOME"] = "/workspace/.corepack"
+            env["COREPACK_ENABLE_DOWNLOAD_PROMPT"] = "0"
     env.update(config.env)
     workdir = "/workspace" if config.workdir == "." else f"/workspace/{config.workdir.strip('/')}"
     return ResolvedProject(

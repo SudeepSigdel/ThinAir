@@ -414,7 +414,11 @@ never sent. Cancelled jobs are not announced.
 ## Configuring a project: `thinair.yaml`
 
 Most Python (`requirements.txt` / `pyproject.toml`) and Node (`package.json`) projects work with
-no configuration. To override anything, add `thinair.yaml` to the repository root:
+no configuration. Node projects use the package manager their lockfile names: `pnpm-lock.yaml` runs
+`corepack pnpm install --frozen-lockfile` and `corepack pnpm test`, `yarn.lock` runs
+`yarn install --frozen-lockfile` and `yarn test` (yarn 1.x; yarn 2+ projects should set `install:`
+and `test:`), `package-lock.json` runs `npm ci`, otherwise `npm install` and `npm test`. To override
+anything, add `thinair.yaml` to the repository root:
 
 ```yaml
 version: 1
