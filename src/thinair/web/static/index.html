@@ -35,6 +35,11 @@
     <!-- Activity: every job, newest first -->
     <section id="view-activity" hidden>
       <h1>Activity</h1>
+      <div id="activity-filters" class="tabs" role="group" aria-label="Show jobs">
+        <button type="button" class="tab" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="tab" data-filter="running" aria-pressed="false">Running</button>
+        <button type="button" class="tab" data-filter="failed" aria-pressed="false">Failed</button>
+      </div>
       <ul id="activity-jobs" class="jobs"></ul>
       <p id="activity-empty" class="muted" hidden>No jobs yet. Start one from a project.</p>
       <p class="error" id="activity-error" role="alert" hidden></p>

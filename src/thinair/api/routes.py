@@ -329,7 +329,9 @@ def create_job(
 def list_jobs(
     limit: int = Query(30, ge=1, le=100),
     before: str | None = Query(None, description="Return jobs older than this job id"),
-    status_: JobStatus | None = Query(None, alias="status"),
+    status_: list[JobStatus] | None = Query(
+        None, alias="status", description="Repeat to match any of several statuses"
+    ),
     repo_id: str | None = None,
     who: Principal = Depends(require_auth),
 ) -> list[JobOut]:
@@ -341,7 +343,7 @@ def list_jobs(
         if before:
             q = q.where(Job.id < before)
         if status_:
-            q = q.where(Job.status == status_)
+            q = q.where(Job.status.in_(status_))  # type: ignore[attr-defined]
         if repo_id:
             q = q.where(Job.repo_id == repo_id)
         rows = s.exec(q.order_by(Job.id.desc()).limit(limit))  # type: ignore[attr-defined]
