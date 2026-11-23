@@ -195,6 +195,9 @@ def detect(
 class HttpsResult:
     ok: bool
     reason: str  # phone-readable
+    # The address could not be reached at all (no route, refused, timed out, no DNS): says nothing
+    # about its certificate, and from inside Docker it is expected for the machine's own address.
+    unreachable: bool = False
 
 
 def https_ready(
@@ -226,9 +229,11 @@ def https_ready(
         # Caddy refuses the handshake while it has no certificate for the name at all.
         return HttpsResult(False, f"no certificate for {host} yet ({e.reason or type(e).__name__})")
     except socket.gaierror:
-        return HttpsResult(False, f"{target} does not resolve")
+        return HttpsResult(False, f"{target} does not resolve", unreachable=True)
     except (OSError, ValueError) as e:
-        return HttpsResult(False, f"could not connect to {target}:{port} ({type(e).__name__})")
+        return HttpsResult(
+            False, f"could not connect to {target}:{port} ({type(e).__name__})", unreachable=True
+        )
     parts = status.split()
     if len(parts) >= 2 and parts[1] == "200":
         return HttpsResult(True, f"https://{host} has a valid certificate and answers")

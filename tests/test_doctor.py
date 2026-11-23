@@ -235,3 +235,54 @@ def test_a_publicly_published_app_port_is_flagged(monkeypatch) -> None:
     c = by_name(run_checks(FakeDocker(), online=False))
     assert c["Proxy trust"].status == "warn"
     assert "THINAIR_BIND" in c["Proxy trust"].fix and "shares one" in c["Proxy trust"].detail
+
+
+# ---- the HTTPS check on a Tailscale address ---------------------------------------------------------
+def _tailscale(monkeypatch, host: str = "box.tail1234.ts.net") -> None:
+    monkeypatch.delenv("THINAIR_DOMAIN", raising=False)
+    monkeypatch.setenv("THINAIR_PUBLIC_URL", f"https://{host}")
+    get_settings.cache_clear()
+
+
+def test_an_unreachable_tailscale_address_is_a_note_not_a_warning(monkeypatch) -> None:
+    """The check connects from inside the container to the machine's own Funnel address, which
+    Docker networking does not allow (a hairpin): it failed on every working Tailscale install, and
+    a warning that never goes away teaches people to ignore warnings."""
+    from thinair import netinfo
+
+    _tailscale(monkeypatch)
+    monkeypatch.setattr(
+        netinfo,
+        "https_ready",
+        lambda host, via=None: netinfo.HttpsResult(
+            False, f"could not connect to {host}:443 (OSError)", unreachable=True
+        ),
+    )
+    [c] = doctor._https(online=True)
+    assert c.status == "ok" and "Tailscale" in c.detail and "phone" in c.detail
+
+
+def test_a_tailscale_address_that_answers_wrongly_still_warns(monkeypatch) -> None:
+    from thinair import netinfo
+
+    _tailscale(monkeypatch)
+    for res in (
+        netinfo.HttpsResult(False, "no valid certificate for box.tail1234.ts.net yet (x)"),
+        netinfo.HttpsResult(False, "https://box.tail1234.ts.net answered HTTP/1.1 502 Bad Gateway"),
+    ):
+        monkeypatch.setattr(netinfo, "https_ready", lambda host, via=None, r=res: r)
+        [c] = doctor._https(online=True)
+        assert c.status == "warn", res.reason
+
+
+def test_an_unreachable_address_that_is_not_tailscale_still_warns(monkeypatch) -> None:
+    from thinair import netinfo
+
+    _tailscale(monkeypatch, "thinair.example.com")  # an own domain with no Caddy: a real problem
+    monkeypatch.setattr(
+        netinfo,
+        "https_ready",
+        lambda host, via=None: netinfo.HttpsResult(False, "could not connect", unreachable=True),
+    )
+    [c] = doctor._https(online=True)
+    assert c.status == "warn"
