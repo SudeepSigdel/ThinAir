@@ -261,3 +261,41 @@ def test_a_flood_of_wrong_tokens_from_many_addresses_still_slows_guessing(monkey
         short = {"Authorization": "Bearer " + "g" * 20}
         assert c.get("/api/me", headers=short).status_code == 429
         assert c.get("/api/me", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+
+
+# ---- when a token was last used ---------------------------------------------------------------
+def test_relative_time_reads_like_a_person_would_say_it() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from thinair.timeago import relative_time
+
+    now = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+
+    def ago(**kw):
+        return relative_time(now - timedelta(**kw), now)
+
+    assert relative_time(None, now) == "never"
+    assert ago(seconds=5) == "just now"
+    assert ago(seconds=59) == "just now"
+    assert ago(minutes=1) == "1 min ago"
+    assert ago(minutes=59, seconds=59) == "59 min ago"
+    assert ago(hours=1) == "1 h ago"
+    assert ago(hours=23) == "23 h ago"
+    assert ago(days=1) == "1 d ago"
+    assert ago(days=45) == "45 d ago"
+    assert relative_time(now + timedelta(minutes=3), now) == "just now"  # a clock a little ahead
+    # SQLite hands back naive datetimes (stored as UTC): they must work too.
+    assert relative_time((now - timedelta(hours=2)).replace(tzinfo=None), now) == "2 h ago"
+
+
+def test_token_list_shows_when_each_token_was_last_used() -> None:
+    from typer.testing import CliRunner
+
+    runner = CliRunner()
+    made = runner.invoke(cli_app, ["token", "create", "--name", "laptop"]).stdout.strip()
+    row = runner.invoke(cli_app, ["token", "list"]).stdout
+    assert "laptop" in row and "never" in row  # created, never used
+    with session_scope() as s:  # one real use stamps it (the app's own database, as the CLI uses)
+        assert auth.verify_token(s, made) is not None
+    row = runner.invoke(cli_app, ["token", "list"]).stdout
+    assert "laptop" in row and "just now" in row and "never" not in row
